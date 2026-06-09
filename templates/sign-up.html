@@ -1,0 +1,18 @@
+<html>
+    <head>
+        <title>Sign Up</title>
+        <link rel="stylesheet" href="/static/base_styles.css">
+    </head>
+    <body class="auth-page">
+        
+        <h1>Sign Up</h1>
+        <p class="auth-subtitle">Create your organisation account</p>
+        <form action="/sign-up-api" method="post">
+            <input type="text" name="email" placeholder="Email">
+            <input type="password" name="password" placeholder="Password">
+            <input type="text" name="org_name" placeholder="Organisation name">
+            <button type="submit">Sign Up</button>
+        </form>
+        <a class="auth-footer" href="/sign-in">Already have an account? Sign in</a>
+    </body>
+</html>

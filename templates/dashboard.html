@@ -1,0 +1,84 @@
+<html>
+    <head>
+        <title>Dashboard</title>
+        <link rel="stylesheet" href="{{ url_for('static', filename='base_styles.css') }}">
+        <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}">
+        <link rel="stylesheet" href="{{ url_for('static', filename='dashboard-bg/grainient.css') }}">
+    </head>
+    <body>
+        <header class="app_header">
+            <div class="app_header__meta">
+                <h1>Dashboard</h1>
+                <p>Welcome back, {{ email }}</p>
+            </div>
+        </header>
+
+        <div class="chat_container">
+            <div class="chat_list">
+                <div class="chat_inbox">
+                    <span class="chat_inbox__label">Inbox</span>
+                    <p class="chat_inbox__hint">Pick up your chat with the team where you left off</p>
+                    <div class="chat_item">
+                        {% for chat in chats %}
+                            <a href="{{ url_for('chat', chat_id=chat[1]) }}">{{ chat[0] }}</a>
+                        {% endfor %}
+                    </div>
+                </div>
+                <div class="dashboard_main">
+                    <a href="{{ url_for('settings') }}" class="dashboard_main__settings" aria-label="Settings">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" height="22" width="22" aria-hidden="true">
+                            <path stroke="currentColor" d="m10.5 1.5 -0.181 0.543a7 7 0 0 1 -0.716 1.514 4.632 4.632 0 0 1 -3.717 2.146 6.998 6.998 0 0 1 -1.668 -0.137l-0.561 -0.115 -1.5 2.598 0.38 0.429c0.374 0.422 0.693 0.884 0.953 1.376a4.632 4.632 0 0 1 0 4.292 7 7 0 0 1 -0.953 1.376l-0.38 0.429 1.5 2.598 0.56 -0.115a6.997 6.997 0 0 1 1.67 -0.137 4.632 4.632 0 0 1 3.716 2.146c0.296 0.47 0.537 0.979 0.716 1.514l0.181 0.543h3l0.181 -0.543c0.179 -0.536 0.42 -1.043 0.716 -1.514a4.632 4.632 0 0 1 3.717 -2.146 6.996 6.996 0 0 1 1.668 0.137l0.561 0.115 1.5 -2.598 -0.38 -0.429a7.007 7.007 0 0 1 -0.953 -1.376 4.632 4.632 0 0 1 0 -4.292c0.26 -0.492 0.579 -0.954 0.953 -1.376l0.38 -0.429 -1.5 -2.598 -0.56 0.115a6.999 6.999 0 0 1 -1.67 0.137 4.632 4.632 0 0 1 -3.716 -2.146 6.997 6.997 0 0 1 -0.716 -1.514L13.5 1.5h-3Z" stroke-width="1"></path>
+                            <path stroke="currentColor" d="M15.502 12a3.502 3.502 0 1 1 -7.004 0 3.502 3.502 0 0 1 7.004 0Z" stroke-width="1"></path>
+                        </svg>
+                    </a>
+                    <div id="dashboard-grainient-root" class="dashboard_main__bg"></div>
+                    <div class="dashboard_main__hero">
+                        <p class="dashboard_main__tagline">
+                            Let's make your site <span class="dashboard_main__typed"><span id="hero-word"></span><span class="dashboard_main__cursor" aria-hidden="true">|</span></span>
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <script type="module" src="{{ url_for('static', filename='dashboard-bg/dashboard-bg.js') }}"></script>
+        <script>
+            (function () {
+                const words = ['special', 'beautiful', 'stand-out', 'different'];
+                const wordEl = document.getElementById('hero-word');
+                if (!wordEl) return;
+
+                let wordIndex = 0;
+                let charIndex = 0;
+                let deleting = false;
+
+                function tick() {
+                    const word = words[wordIndex];
+
+                    if (!deleting) {
+                        wordEl.textContent = word.slice(0, charIndex + 1);
+                        charIndex += 1;
+                        if (charIndex === word.length) {
+                            deleting = true;
+                            setTimeout(tick, 1800);
+                            return;
+                        }
+                        setTimeout(tick, 85);
+                        return;
+                    }
+
+                    wordEl.textContent = word.slice(0, charIndex - 1);
+                    charIndex -= 1;
+                    if (charIndex === 0) {
+                        deleting = false;
+                        wordIndex = (wordIndex + 1) % words.length;
+                        setTimeout(tick, 350);
+                        return;
+                    }
+                    setTimeout(tick, 45);
+                }
+
+                tick();
+            })();
+        </script>
+    </body>
+</html>

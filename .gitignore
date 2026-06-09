@@ -1,0 +1,11 @@
+.env
+__pycache__/
+*.py[cod]
+.Python
+.venv/
+venv/
+.DS_Store
+
+frontend/dashboard-bg/node_modules/
+frontend/dashboard-bg/.esbuild-bin/
+frontend/dashboard-bg/.tools/

@@ -1,0 +1,209 @@
+<html>
+    <head>
+        <title>Chat with {{ other_persons_name }}</title>
+        <link rel="stylesheet" href="{{ url_for('static', filename='base_styles.css') }}">
+        <link rel="stylesheet" href="{{ url_for('static', filename='chat.css') }}">
+    </head>
+    <body>
+        <header class="chat_header">
+            <div class="chat_header__info">
+                <span class="chat_header__label">Conversation</span>
+                <h1>{{ other_persons_name }}</h1>
+            </div>
+            <a class="chat_header__back" href="{{ url_for('dashboard') }}">← Dashboard</a>
+        </header>
+
+        <div class="chat_workspace">
+            <div class="chat_panel">
+                <div id="messages" class="messages">
+                    {% for conversation in conversation_list %}
+                        <div class="conversation_item {% if conversation.sender == 'you' %}conversation_item--you{% endif %}" data-message-id="{{ conversation.id }}">
+                            <div class="conversation_item_sender">{{ conversation.sender }}</div>
+                            <div class="conversation_item_body">{{ conversation.body }}</div>
+                        </div>
+                    {% else %}
+                        <p class="messages_empty">No messages yet.</p>
+                    {% endfor %}
+                </div>
+
+                <form id="message-form" class="message_form">
+                    <input id="message-input" type="text" placeholder="Type a message..." autocomplete="off" required>
+                    <button type="submit">Send</button>
+                </form>
+            </div>
+
+            <div id="site_preview" class="site_preview">
+                {% if admin %}
+                    <div class="site_preview__controls">
+                        <label class="site_preview__label" for="site_url">Client site preview</label>
+                        <div class="site_preview__form">
+                            <input type="url" id="site_url" placeholder="https://example.com" value="{{ site_url or '' }}">
+                            <button type="button" id="save_site_url">Save</button>
+                        </div>
+                    </div>
+                {% endif %}
+
+                <div class="site_preview__frame" id="site_preview_frame">
+                    {% if site_url %}
+                        <iframe id="site_iframe" src="{{ site_url }}" title="Site preview"></iframe>
+                    {% else %}
+                        <p class="site_preview__empty">You'll see your site here soon.</p>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        <script>
+            const chatId = {{ chat_id }};
+            const userId = {{ user_id }};
+            const isAdmin = {{ 'true' if admin else 'false' }};
+            const messagesEl = document.getElementById('messages');
+            const form = document.getElementById('message-form');
+            const input = document.getElementById('message-input');
+            let lastFingerprint = getFingerprintFromDom();
+
+            function getFingerprintFromDom() {
+                return [...messagesEl.querySelectorAll('[data-message-id]')]
+                    .map((el) => el.dataset.messageId)
+                    .join(',');
+            }
+
+            function getFingerprint(messages) {
+                return messages.map((message) => message.id).join(',');
+            }
+
+            function isNearBottom() {
+                return messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 80;
+            }
+
+            function buildMessageElement(message, isNew) {
+                const item = document.createElement('div');
+                item.className = 'conversation_item' + (message.sender === 'you' ? ' conversation_item--you' : '');
+                if (isNew) {
+                    item.classList.add('conversation_item--new');
+                }
+                item.dataset.messageId = message.id;
+                item.innerHTML = `
+                    <div class="conversation_item_sender">${escapeHtml(message.sender)}</div>
+                    <div class="conversation_item_body">${escapeHtml(message.body)}</div>
+                `;
+                return item;
+            }
+
+            function renderMessages(messages, forceScroll) {
+                const fingerprint = getFingerprint(messages);
+                if (fingerprint === lastFingerprint) {
+                    return;
+                }
+
+                const stickToBottom = forceScroll || isNearBottom();
+                const emptyState = messagesEl.querySelector('.messages_empty');
+
+                if (!messages.length) {
+                    if (!emptyState) {
+                        messagesEl.innerHTML = '<p class="messages_empty">No messages yet.</p>';
+                    }
+                    lastFingerprint = fingerprint;
+                    return;
+                }
+
+                if (emptyState) {
+                    emptyState.remove();
+                }
+
+                const existingIds = new Set(
+                    [...messagesEl.querySelectorAll('[data-message-id]')].map((el) => el.dataset.messageId)
+                );
+                const newMessages = messages.filter((message) => !existingIds.has(String(message.id)));
+
+                if (existingIds.size === 0) {
+                    messagesEl.innerHTML = '';
+                    messages.forEach((message) => {
+                        messagesEl.appendChild(buildMessageElement(message, false));
+                    });
+                } else {
+                    newMessages.forEach((message) => {
+                        messagesEl.appendChild(buildMessageElement(message, true));
+                    });
+                }
+
+                lastFingerprint = fingerprint;
+
+                if (stickToBottom) {
+                    messagesEl.scrollTop = messagesEl.scrollHeight;
+                }
+            }
+
+            function escapeHtml(text) {
+                return text
+                    .replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;')
+                    .replace(/"/g, '&quot;')
+                    .replace(/'/g, '&#39;');
+            }
+
+            async function loadMessages(forceScroll) {
+                const response = await fetch(`/chat/${chatId}/messages`);
+                if (!response.ok) {
+                    return;
+                }
+                const data = await response.json();
+                renderMessages(data.messages, forceScroll);
+            }
+
+            function showSitePreview(url) {
+                const frameWrap = document.getElementById('site_preview_frame');
+                frameWrap.innerHTML = `<iframe id="site_iframe" src="${escapeHtml(url)}" title="Site preview"></iframe>`;
+            }
+
+            form.addEventListener('submit', async (event) => {
+                event.preventDefault();
+                const body = input.value.trim();
+                if (!body) {
+                    return;
+                }
+
+                const response = await fetch(`/chat/${chatId}/send`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ body }),
+                });
+
+                if (response.ok) {
+                    input.value = '';
+                    await loadMessages(true);
+                }
+            });
+
+            setInterval(() => {
+                if (!document.hidden) {
+                    loadMessages(false);
+                }
+            }, 5000);
+
+            const saveSiteUrlBtn = document.getElementById('save_site_url');
+            if (saveSiteUrlBtn) {
+                saveSiteUrlBtn.addEventListener('click', async () => {
+                    const siteUrlInput = document.getElementById('site_url');
+                    const siteUrl = siteUrlInput.value.trim();
+                    if (!siteUrl) {
+                        return;
+                    }
+
+                    const response = await fetch(`/chat/${chatId}/site-url`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ site_url: siteUrl }),
+                    });
+
+                    if (response.ok) {
+                        const data = await response.json();
+                        siteUrlInput.value = data.site_url;
+                        showSitePreview(data.site_url);
+                    }
+                });
+            }
+        </script>
+    </body>
+</html>

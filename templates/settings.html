@@ -1,0 +1,24 @@
+<html>
+    <head>
+        <title>Settings</title>
+        <link rel="stylesheet" href="{{ url_for('static', filename='base_styles.css') }}">
+        <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}">
+    </head>
+    <body class="settings-page">
+        <header class="app_header">
+            <div class="app_header__meta">
+                <h1>Settings</h1>
+                <p>{{ email }}</p>
+            </div>
+            <a class="settings_back" href="{{ url_for('dashboard') }}">← Dashboard</a>
+        </header>
+
+        <main class="settings_panel">
+            <section class="settings_section">
+                <h2>Account</h2>
+                <p class="settings_section__hint">Manage your portal session.</p>
+                <a class="settings_logout" href="{{ url_for('logout') }}">Log out</a>
+            </section>
+        </main>
+    </body>
+</html>

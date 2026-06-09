@@ -1,0 +1,17 @@
+<html>
+    <head>
+        <title>Sign In</title>
+        <link rel="stylesheet" href="/static/base_styles.css">
+    </head>
+    <body class="auth-page">
+      
+        <h1>Sign In</h1>
+        <p class="auth-subtitle">Access your portal</p>
+        <form action="/sign-in-api" method="post">
+            <input type="text" name="email" placeholder="Email">
+            <input type="password" name="password" placeholder="Password">
+            <button type="submit">Sign In</button>
+        </form>
+        <a class="auth-footer" href="/sign-up">Don't have an account? Sign up</a>
+    </body>
+</html>
