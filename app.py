@@ -94,6 +94,10 @@ DB_URL = os.environ.get('DB_URL')
 ADMIN_ACC_ID = 7
 
 
+def get_db_connection():
+    return psycopg.connect(DB_URL, prepare_threshold=None)
+
+
 @app.route('/')
 def index():
     if session.get('user_id'):
@@ -106,7 +110,7 @@ def dashboard():
     if not user_id:
         return redirect(url_for('sign_in'))
 
-    with psycopg.connect(DB_URL) as conn:
+    with get_db_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 'SELECT id, email, chats FROM public.users WHERE id = %s',
@@ -149,7 +153,7 @@ def sign_up_api():
     password = request.form['password']
     org_name = request.form['org_name']
     hashed_password = generate_password_hash(password)
-    with psycopg.connect(DB_URL) as conn:
+    with get_db_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 'INSERT INTO public.users (email, password, created_at, name, chats) VALUES (%s, %s, %s, %s, %s) RETURNING id',
@@ -187,7 +191,7 @@ def sign_up_api():
 def sign_in_api():
     email = request.form['email']
     password = request.form['password']
-    with psycopg.connect(DB_URL) as conn:
+    with get_db_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 'SELECT id, email, password FROM public.users WHERE email = %s',
@@ -208,7 +212,7 @@ def chat(chat_id):
     if not user_id:
         return redirect(url_for('sign_in'))
 
-    with psycopg.connect(DB_URL) as conn:
+    with get_db_connection() as conn:
         with conn.cursor() as cursor:
             if not can_message(user_id, chat_id, cursor):
                 return redirect(url_for('dashboard'))
@@ -236,7 +240,7 @@ def chat_messages(chat_id):
     if not user_id:
         return jsonify({'error': 'unauthorized'}), 401
 
-    with psycopg.connect(DB_URL) as conn:
+    with get_db_connection() as conn:
         with conn.cursor() as cursor:
             if not can_message(user_id, chat_id, cursor):
                 return jsonify({'error': 'forbidden'}), 403
@@ -257,7 +261,7 @@ def chat_send(chat_id):
     if not body:
         return jsonify({'error': 'empty message'}), 400
 
-    with psycopg.connect(DB_URL) as conn:
+    with get_db_connection() as conn:
         with conn.cursor() as cursor:
             if not can_message(user_id, chat_id, cursor):
                 return jsonify({'error': 'forbidden'}), 403
@@ -286,7 +290,7 @@ def save_site_url(chat_id):
     if not site_url:
         return jsonify({'error': 'empty url'}), 400
 
-    with psycopg.connect(DB_URL) as conn:
+    with get_db_connection() as conn:
         with conn.cursor() as cursor:
             if not can_message(user_id, chat_id, cursor):
                 return jsonify({'error': 'forbidden'}), 403

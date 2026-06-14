@@ -424,6 +424,8 @@ body.settings-page .app_header {
 @media (max-width: 768px) {
     .settings_layout {
         flex-direction: column;
+        margin: 1.25rem auto;
+        padding: 0 1rem;
     }
 
     .settings_nav {
@@ -435,15 +437,22 @@ body.settings-page .app_header {
     .settings_nav__item {
         flex: 1;
         text-align: center;
+        min-height: 44px;
+    }
+
+    .settings_back {
+        font-size: 0.75rem;
+        padding: 0.5rem 0.625rem;
     }
 
     .chat_container {
-        padding: 1rem 1.25rem 1.5rem;
+        padding: 1rem max(1rem, env(safe-area-inset-right)) max(1.25rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left));
     }
 
     .chat_list {
         flex-direction: column;
         min-height: auto;
+        gap: 1rem;
     }
 
     .chat_inbox {
@@ -451,11 +460,41 @@ body.settings-page .app_header {
         width: 100%;
     }
 
+    .chat_item a {
+        min-height: 48px;
+        display: flex;
+        align-items: center;
+    }
+
     .app_header {
-        padding: 0.875rem 1.25rem;
+        padding: 0.875rem max(1rem, env(safe-area-inset-left)) 0.875rem max(1rem, env(safe-area-inset-right));
+        padding-top: max(0.875rem, env(safe-area-inset-top));
     }
 
     .dashboard_main {
-        min-height: 160px;
+        min-height: 220px;
+    }
+
+    .dashboard_main__hero {
+        padding: 1.5rem 1.25rem;
+    }
+
+    .dashboard_main__tagline {
+        font-size: clamp(1.125rem, 5vw, 1.5rem);
+    }
+
+    .dashboard_main__typed {
+        min-width: 7.5ch;
+    }
+
+    .dashboard_main__settings {
+        top: 0.75rem;
+        right: 0.75rem;
+        width: 2.75rem;
+        height: 2.75rem;
+    }
+
+    .settings_section {
+        padding: 1.25rem;
     }
 }

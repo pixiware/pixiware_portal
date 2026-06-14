@@ -1,5 +1,8 @@
-<html>
+<html lang="en">
     <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+        <meta name="theme-color" content="#10b981">
         <title>Chat with {{ other_persons_name }}</title>
         <link rel="stylesheet" href="{{ url_for('static', filename='base_styles.css') }}">
         <link rel="stylesheet" href="{{ url_for('static', filename='chat.css') }}">
@@ -13,7 +16,12 @@
             <a class="chat_header__back" href="{{ url_for('dashboard') }}">← Dashboard</a>
         </header>
 
-        <div class="chat_workspace">
+        <nav class="chat_mobile_tabs" aria-label="Chat views">
+            <button type="button" class="chat_mobile_tabs__btn chat_mobile_tabs__btn--active" data-view="chat">Messages</button>
+            <button type="button" class="chat_mobile_tabs__btn" data-view="site">Your site</button>
+        </nav>
+
+        <div class="chat_workspace chat_workspace--mobile-chat" id="chat-workspace">
             <div class="chat_panel">
                 <div id="messages" class="messages">
                     {% for conversation in conversation_list %}
@@ -43,6 +51,18 @@
                     </div>
                 {% endif %}
 
+                <div class="site_preview__toolbar" id="site_preview_toolbar" {% if not site_url %}hidden{% endif %}>
+                    <p class="site_preview__title">Site preview</p>
+                    <div class="site_preview__actions">
+                        <button type="button" class="site_preview__fullscreen" id="open_fullscreen" aria-label="View site in full screen">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                                <path stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3m10 0h3a2 2 0 0 0 2-2v-3"/>
+                            </svg>
+                            Full screen
+                        </button>
+                    </div>
+                </div>
+
                 <div class="site_preview__frame" id="site_preview_frame">
                     {% if site_url %}
                         <iframe id="site_iframe" src="{{ site_url }}" title="Site preview"></iframe>
@@ -53,6 +73,14 @@
             </div>
         </div>
 
+        <div class="site_fullscreen" id="site_fullscreen" hidden aria-hidden="true">
+            <div class="site_fullscreen__bar">
+                <p class="site_fullscreen__title">Your site</p>
+                <button type="button" class="site_fullscreen__close" id="close_fullscreen">Close</button>
+            </div>
+            <div class="site_fullscreen__frame" id="site_fullscreen_frame"></div>
+        </div>
+
         <script>
             const chatId = {{ chat_id }};
             const userId = {{ user_id }};
@@ -60,7 +88,12 @@
             const messagesEl = document.getElementById('messages');
             const form = document.getElementById('message-form');
             const input = document.getElementById('message-input');
+            const chatWorkspace = document.getElementById('chat-workspace');
+            const sitePreviewToolbar = document.getElementById('site_preview_toolbar');
+            const siteFullscreen = document.getElementById('site_fullscreen');
+            const siteFullscreenFrame = document.getElementById('site_fullscreen_frame');
             let lastFingerprint = getFingerprintFromDom();
+            let currentSiteUrl = {{ site_url|tojson if site_url else 'null' }};
 
             function getFingerprintFromDom() {
                 return [...messagesEl.querySelectorAll('[data-message-id]')]
@@ -153,9 +186,57 @@
             }
 
             function showSitePreview(url) {
+                currentSiteUrl = url;
                 const frameWrap = document.getElementById('site_preview_frame');
                 frameWrap.innerHTML = `<iframe id="site_iframe" src="${escapeHtml(url)}" title="Site preview"></iframe>`;
+                if (sitePreviewToolbar) {
+                    sitePreviewToolbar.hidden = false;
+                }
             }
+
+            function openSiteFullscreen() {
+                if (!currentSiteUrl) {
+                    return;
+                }
+
+                siteFullscreenFrame.innerHTML = `<iframe src="${escapeHtml(currentSiteUrl)}" title="Site preview full screen"></iframe>`;
+                siteFullscreen.classList.add('site_fullscreen--open');
+                siteFullscreen.hidden = false;
+                siteFullscreen.setAttribute('aria-hidden', 'false');
+                document.body.style.overflow = 'hidden';
+            }
+
+            function closeSiteFullscreen() {
+                siteFullscreen.classList.remove('site_fullscreen--open');
+                siteFullscreen.hidden = true;
+                siteFullscreen.setAttribute('aria-hidden', 'true');
+                siteFullscreenFrame.innerHTML = '';
+                document.body.style.overflow = '';
+            }
+
+            function setMobileView(view) {
+                chatWorkspace.classList.toggle('chat_workspace--mobile-chat', view === 'chat');
+                chatWorkspace.classList.toggle('chat_workspace--mobile-site', view === 'site');
+
+                document.querySelectorAll('.chat_mobile_tabs__btn').forEach((btn) => {
+                    btn.classList.toggle('chat_mobile_tabs__btn--active', btn.dataset.view === view);
+                });
+            }
+
+            document.querySelectorAll('.chat_mobile_tabs__btn').forEach((btn) => {
+                btn.addEventListener('click', () => {
+                    setMobileView(btn.dataset.view);
+                });
+            });
+
+            document.getElementById('open_fullscreen')?.addEventListener('click', openSiteFullscreen);
+            document.getElementById('close_fullscreen')?.addEventListener('click', closeSiteFullscreen);
+
+            document.addEventListener('keydown', (event) => {
+                if (event.key === 'Escape' && siteFullscreen.classList.contains('site_fullscreen--open')) {
+                    closeSiteFullscreen();
+                }
+            });
 
             form.addEventListener('submit', async (event) => {
                 event.preventDefault();
@@ -201,6 +282,7 @@
                         const data = await response.json();
                         siteUrlInput.value = data.site_url;
                         showSitePreview(data.site_url);
+                        setMobileView('site');
                     }
                 });
             }
