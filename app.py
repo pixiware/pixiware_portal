@@ -2,9 +2,8 @@ from flask import Flask, render_template, request, redirect, url_for, session, j
 import os
 import psycopg
 from datetime import datetime, timezone
-
 from werkzeug.security import generate_password_hash, check_password_hash
-
+import stripe
 def _load_env_file():
     env_path = os.path.join(os.path.dirname(__file__), '.env')
     if not os.path.isfile(env_path):
@@ -307,6 +306,19 @@ def save_site_url(chat_id):
 def logout():
     session.clear()
     return redirect(url_for('sign_in'))
+
+@app.route('/create-checkout-session',methods=['POST'])
+def create_checkout_session():
+    stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
+    checkout = stripe.checkout.Session.create(
+        mode="subscription",
+        line_items=[{"price": os.getenv("STRIPE_PRICE_ID"), "quantity": 1}],
+        success_url="https://portal.pixiware.co.uk/billing/success",
+        cancel_url="https://portal.pixiware.co.uk/billing/cancel",
+        metadata={"client_id": "test_client_123"},  # hardcoded for now; real client_id later
+    )
+    print('successfully processed payment request')
+    return jsonify({"url": checkout.url})
 
 if __name__ == '__main__':
     app.run()

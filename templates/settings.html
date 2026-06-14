@@ -5,6 +5,8 @@
         <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}">
     </head>
     <body class="settings-page">
+        {% set plan = 'free' %}
+
         <header class="app_header">
             <div class="app_header__meta">
                 <h1>Settings</h1>
@@ -13,12 +15,79 @@
             <a class="settings_back" href="{{ url_for('dashboard') }}">← Dashboard</a>
         </header>
 
-        <main class="settings_panel">
-            <section class="settings_section">
-                <h2>Account</h2>
-                <p class="settings_section__hint">Manage your portal session.</p>
-                <a class="settings_logout" href="{{ url_for('logout') }}">Log out</a>
-            </section>
+        <main class="settings_layout">
+            <nav class="settings_nav" aria-label="Settings sections">
+                <button type="button" class="settings_nav__item settings_nav__item--active" data-panel="account">Account</button>
+                <button type="button" class="settings_nav__item" data-panel="pricing">Pricing</button>
+            </nav>
+
+            <div class="settings_content">
+                <section class="settings_section settings_panel-view settings_panel-view--active" id="panel-account">
+                    <h2>Account</h2>
+                    <p class="settings_section__hint">Manage your portal session.</p>
+                    <a class="settings_logout" href="{{ url_for('logout') }}">Log out</a>
+                </section>
+
+                <section class="settings_section settings_panel-view" id="panel-pricing" hidden>
+                    <div class="pricing_current">
+                        <span class="pricing_current__label">Current plan</span>
+                        <span class="pricing_current__badge pricing_current__badge--{{ plan }}">{{ plan|capitalize }}</span>
+                    </div>
+
+                    <div class="pricing_card">
+                        <div class="pricing_card__header">
+                            <h2 class="pricing_card__title">The Pixiware Plan</h2>
+                            <div class="pricing_card__price">
+                                <span class="pricing_card__price-build"><strong>£0</strong> to build</span>
+                                <span class="pricing_card__price-monthly"><strong>£25</strong>/month for everything after</span>
+                            </div>
+                            <p class="pricing_card__cta">Enquire now, it's free →</p>
+                        </div>
+
+                        <p class="pricing_card__note">
+                            Booking systems, e-commerce or complex integrations may be quoted separately. No surprises — we'll always agree it with you first.
+                        </p>
+
+                        <h3 class="pricing_card__features-title">Everything's included from day one</h3>
+                        <ul class="pricing_card__features">
+                            <li>Custom high-end website, built free</li>
+                            <li>Mobile-first, fast, top-of-Google SEO</li>
+                            <li>Live in 2–3 days</li>
+                            <li>Your private Pixiware Portal</li>
+                            <li>Message us anytime — real human support, 24/7</li>
+                            <li>Unlimited changes — we make them for you</li>
+                            <li>Optional AI enhancements you can use yourself</li>
+                            <li>Fully managed hosting and domain</li>
+                            <li>Security, backups and monitoring</li>
+                            <li>You own your domain, no lock-in, cancel anytime</li>
+                        </ul>
+
+                        {% if plan == 'free' %}
+                            <button type="button" class="pricing_upgrade">Upgrade</button>
+                        {% else %}
+                            <p class="pricing_card__pro-note">You're on Pro. Billing management coming soon.</p>
+                        {% endif %}
+                    </div>
+                </section>
+            </div>
         </main>
+
+        <script>
+            document.querySelectorAll('.settings_nav__item').forEach((item) => {
+                item.addEventListener('click', () => {
+                    const panel = item.dataset.panel;
+
+                    document.querySelectorAll('.settings_nav__item').forEach((navItem) => {
+                        navItem.classList.toggle('settings_nav__item--active', navItem === item);
+                    });
+
+                    document.querySelectorAll('.settings_panel-view').forEach((view) => {
+                        const isActive = view.id === `panel-${panel}`;
+                        view.classList.toggle('settings_panel-view--active', isActive);
+                        view.hidden = !isActive;
+                    });
+                });
+            });
+        </script>
     </body>
 </html>

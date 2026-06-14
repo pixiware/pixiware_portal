@@ -1,0 +1,12 @@
+.env
+.git
+.gitignore
+__pycache__
+*.pyc
+.venv
+venv
+.DS_Store
+frontend/dashboard-bg/node_modules
+frontend/dashboard-bg/.esbuild-bin
+frontend/dashboard-bg/.tools
+tester.py

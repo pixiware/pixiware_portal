@@ -1,3 +1,5 @@
 flask
 psycopg[binary]
 werkzeug
+gunicorn
+stripe
