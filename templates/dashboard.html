@@ -12,7 +12,10 @@
         <header class="app_header">
             <div class="app_header__meta">
                 <h1>Dashboard</h1>
-                <p>Welcome back, {{ email }}</p>
+                <p class="app_header__plan">
+                    Welcome back, {{ email }}
+                    {% if pro_user %}<span class="pro_badge">Pro</span>{% endif %}
+                </p>
             </div>
         </header>
 
@@ -23,7 +26,10 @@
                     <p class="chat_inbox__hint">Pick up your chat with the team where you left off</p>
                     <div class="chat_item">
                         {% for chat in chats %}
-                            <a href="{{ url_for('chat', chat_id=chat[1]) }}">{{ chat[0] }}</a>
+                            <a href="{{ url_for('chat', chat_id=chat[1]) }}">
+                                <span class="chat_item__name">{{ chat[0] }}</span>
+                                <span class="plan_badge plan_badge--{{ 'pro' if chat[2] else 'free' }}">{{ 'Pro' if chat[2] else 'Free' }}</span>
+                            </a>
                         {% endfor %}
                     </div>
                 </div>

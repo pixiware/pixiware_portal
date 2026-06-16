@@ -1,9 +1,43 @@
-from flask import Flask, render_template, request, redirect, url_for, session, jsonify
+from flask import Flask, render_template, request, redirect, url_for, session, jsonify, Response
+import json
+import mimetypes
 import os
+import uuid
 import psycopg
 from datetime import datetime, timezone
+from urllib.parse import quote, urlparse
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.utils import secure_filename
 import stripe
+
+ATTACHMENTS_BUCKET = 'message_attatchments'
+MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
+ALLOWED_ATTACHMENT_TYPES = {
+    'image/jpeg',
+    'image/png',
+    'image/gif',
+    'image/webp',
+    'application/pdf',
+    'text/plain',
+    'application/msword',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+}
+ALLOWED_ATTACHMENT_EXTENSIONS = {
+    '.jpg', '.jpeg', '.png', '.gif', '.webp', '.pdf', '.txt', '.doc', '.docx',
+}
+EXTENSION_MIME_MAP = {
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.png': 'image/png',
+    '.gif': 'image/gif',
+    '.webp': 'image/webp',
+    '.pdf': 'application/pdf',
+    '.txt': 'text/plain',
+    '.doc': 'application/msword',
+    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+}
 def _load_env_file():
     env_path = os.path.join(os.path.dirname(__file__), '.env')
     if not os.path.isfile(env_path):
@@ -33,6 +67,112 @@ def can_message(user_id, chat_id, cursor):
         return False
     return chat_id in parse_chat_ids(row[0])
 
+def get_supabase_project_ref_from_db_url(db_url):
+    if not db_url:
+        return None
+    username = urlparse(db_url).username or ''
+    if username.startswith('postgres.'):
+        return username.split('.', 1)[1]
+    return None
+
+def get_supabase_config():
+    url = os.getenv('SUPABASE_URL')
+    key = os.getenv('SUPABASE_SERVICE_ROLE_KEY')
+
+    if url:
+        url = url.strip()
+        if url.startswith('postgresql://') or '@' in url:
+            url = None
+        elif not url.startswith('http'):
+            url = f'https://{url}'
+        url = url.rstrip('/') if url else None
+
+    if not url:
+        project_ref = get_supabase_project_ref_from_db_url(DB_URL)
+        if project_ref:
+            url = f'https://{project_ref}.supabase.co'
+
+    if url and key:
+        return url, key
+    return None, None
+
+def parse_attachments(raw):
+    if not raw:
+        return []
+    if isinstance(raw, str):
+        return json.loads(raw)
+    if isinstance(raw, list):
+        return raw
+    return list(raw)
+
+def enrich_attachments(attachments, chat_id):
+    enriched = []
+    for attachment in parse_attachments(attachments):
+        path = attachment.get('path')
+        if not path:
+            continue
+        enriched.append({
+            **attachment,
+            'url': url_for('chat_attachment', chat_id=chat_id, path=path),
+        })
+    return enriched
+
+def resolve_attachment_mime(filename, reported_mime):
+    reported = (reported_mime or '').split(';')[0].strip()
+    if reported in ALLOWED_ATTACHMENT_TYPES:
+        return reported
+
+    guessed, _ = mimetypes.guess_type(filename or '')
+    if guessed in ALLOWED_ATTACHMENT_TYPES:
+        return guessed
+
+    ext = os.path.splitext(filename or '')[1].lower()
+    if ext in ALLOWED_ATTACHMENT_EXTENSIONS:
+        return EXTENSION_MIME_MAP[ext]
+
+    raise ValueError('file type is not allowed')
+
+def upload_attachment(file_storage, chat_id):
+    supabase_url, service_key = get_supabase_config()
+    if not supabase_url or not service_key:
+        raise ValueError('file storage is not configured')
+
+    data = file_storage.read()
+    if not data:
+        raise ValueError('empty file')
+    if len(data) > MAX_ATTACHMENT_BYTES:
+        raise ValueError('file is too large (max 10MB)')
+
+    mime = resolve_attachment_mime(file_storage.filename, file_storage.mimetype)
+    safe_name = secure_filename(file_storage.filename) or 'file'
+    object_path = f'{chat_id}/{uuid.uuid4().hex}_{safe_name}'
+    upload_url = f'{supabase_url}/storage/v1/object/{ATTACHMENTS_BUCKET}/{object_path}'
+
+    req = Request(
+        upload_url,
+        data=data,
+        method='POST',
+        headers={
+            'Authorization': f'Bearer {service_key}',
+            'apikey': service_key,
+            'Content-Type': mime,
+            'x-upsert': 'false',
+        },
+    )
+    try:
+        with urlopen(req) as response:
+            response.read()
+    except HTTPError as exc:
+        detail = exc.read().decode('utf-8', errors='replace')
+        raise ValueError(f'upload failed: {detail or exc.reason}') from exc
+
+    return {
+        'name': file_storage.filename or safe_name,
+        'path': object_path,
+        'mime': mime,
+        'size': len(data),
+    }
+
 def fetch_conversation(cursor, user_id, chat_id):
     cursor.execute(
         'SELECT COALESCE(name, email) FROM public.users WHERE id = %s',
@@ -45,7 +185,7 @@ def fetch_conversation(cursor, user_id, chat_id):
     other_name = row[0]
     cursor.execute(
         '''
-        SELECT id, sender_id, body
+        SELECT id, sender_id, body, COALESCE(attachments, '[]'::jsonb)
         FROM public.messages
         WHERE (sender_id = %s AND receiver_id = %s)
            OR (sender_id = %s AND receiver_id = %s)
@@ -57,9 +197,10 @@ def fetch_conversation(cursor, user_id, chat_id):
         {
             'id': msg_id,
             'sender': 'you' if sender_id == user_id else other_name,
-            'body': body,
+            'body': body or '',
+            'attachments': enrich_attachments(attachments, chat_id),
         }
-        for msg_id, sender_id, body in cursor.fetchall()
+        for msg_id, sender_id, body, attachments in cursor.fetchall()
     ]
     return other_name, messages
 
@@ -87,15 +228,259 @@ def normalize_site_url(url):
         url = f'https://{url}'
     return url
 
+def is_pro_user(value):
+    return bool(value)
+
+def get_user_pro_status(cursor, user_id):
+    cursor.execute(
+        'SELECT COALESCE(pro_user, false) FROM public.users WHERE id = %s',
+        (user_id,),
+    )
+    row = cursor.fetchone()
+    return is_pro_user(row[0]) if row else False
+
+def configure_stripe():
+    stripe.api_key = os.getenv('STRIPE_SECRET_KEY')
+
+def stripe_field(obj, key, default=None):
+    if obj is None:
+        return default
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    try:
+        return obj[key]
+    except Exception:
+        return getattr(obj, key, default)
+
+def get_stripe_customer_id(cursor, user_id, email):
+    try:
+        cursor.execute('SAVEPOINT stripe_customer_lookup')
+        cursor.execute(
+            'SELECT stripe_customer_id FROM public.users WHERE id = %s',
+            (user_id,),
+        )
+        row = cursor.fetchone()
+        cursor.execute('RELEASE SAVEPOINT stripe_customer_lookup')
+        if row and row[0]:
+            return row[0]
+    except psycopg.Error:
+        cursor.execute('ROLLBACK TO SAVEPOINT stripe_customer_lookup')
+
+    configure_stripe()
+    customers = stripe.Customer.list(email=email, limit=1)
+    if not customers.data:
+        return None
+
+    customer_id = customers.data[0].id
+    try:
+        cursor.execute('SAVEPOINT stripe_customer_save')
+        cursor.execute(
+            'UPDATE public.users SET stripe_customer_id = %s WHERE id = %s',
+            (customer_id, user_id),
+        )
+        cursor.execute('RELEASE SAVEPOINT stripe_customer_save')
+    except psycopg.Error:
+        cursor.execute('ROLLBACK TO SAVEPOINT stripe_customer_save')
+    return customer_id
+
+def get_active_subscription_id(customer_id, fallback_subscription_id=None):
+    if fallback_subscription_id:
+        try:
+            subscription = stripe.Subscription.retrieve(fallback_subscription_id)
+            status = stripe_field(subscription, 'status')
+            if status and status not in ('canceled', 'incomplete_expired'):
+                return fallback_subscription_id
+        except stripe.error.StripeError:
+            pass
+
+    subscriptions = stripe.Subscription.list(customer=customer_id, status='all', limit=10)
+    for subscription in subscriptions.data:
+        status = stripe_field(subscription, 'status')
+        if status and status not in ('canceled', 'incomplete_expired'):
+            return stripe_field(subscription, 'id')
+    return None
+
+def activate_user_subscription(cursor, user_id, customer_id=None, subscription_id=None):
+    cursor.execute(
+        'UPDATE public.users SET pro_user = true WHERE id = %s',
+        (user_id,),
+    )
+    if customer_id or subscription_id:
+        try:
+            cursor.execute('SAVEPOINT stripe_ids')
+            cursor.execute(
+                '''
+                UPDATE public.users
+                SET stripe_customer_id = COALESCE(%s, stripe_customer_id),
+                    stripe_subscription_id = COALESCE(%s, stripe_subscription_id)
+                WHERE id = %s
+                ''',
+                (customer_id, subscription_id, user_id),
+            )
+            cursor.execute('RELEASE SAVEPOINT stripe_ids')
+        except psycopg.Error as exc:
+            cursor.execute('ROLLBACK TO SAVEPOINT stripe_ids')
+            print(f'Could not save Stripe IDs for user {user_id}: {exc}')
+
+def fulfill_checkout_session(checkout_session):
+    metadata = stripe_field(checkout_session, 'metadata', {})
+    metadata = metadata or {}
+    client_id = stripe_field(metadata, 'client_id') or stripe_field(checkout_session, 'client_reference_id')
+    status = stripe_field(checkout_session, 'status')
+    payment_status = stripe_field(checkout_session, 'payment_status')
+    customer_id = stripe_field(checkout_session, 'customer')
+    subscription_id = stripe_field(checkout_session, 'subscription')
+
+    if status != 'complete':
+        return False
+    if payment_status not in ('paid', 'no_payment_required'):
+        return False
+    if not client_id or not str(client_id).isdigit():
+        return False
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            activate_user_subscription(
+                cursor,
+                int(client_id),
+                customer_id,
+                subscription_id,
+            )
+    return True
+
+def sync_user_subscription_from_stripe(cursor, user_id, email):
+    configure_stripe()
+    if not stripe.api_key:
+        return get_user_pro_status(cursor, user_id)
+
+    customer_id = get_stripe_customer_id(cursor, user_id, email)
+    if not customer_id:
+        return get_user_pro_status(cursor, user_id)
+
+    subscriptions = stripe.Subscription.list(customer=customer_id, status='active', limit=1)
+    has_active = bool(subscriptions.data)
+
+    if has_active:
+        subscription = subscriptions.data[0]
+        activate_user_subscription(cursor, user_id, customer_id, subscription.id)
+        return True
+
+    set_user_pro_status(cursor, user_id, False)
+    return False
+
+def set_user_pro_status(cursor, user_id, pro_user, customer_id=None, subscription_id=None):
+    if pro_user:
+        activate_user_subscription(cursor, user_id, customer_id, subscription_id)
+        return
+
+    cursor.execute(
+        'UPDATE public.users SET pro_user = false WHERE id = %s',
+        (user_id,),
+    )
+    try:
+        cursor.execute('SAVEPOINT stripe_subscription_clear')
+        cursor.execute(
+            'UPDATE public.users SET stripe_subscription_id = NULL WHERE id = %s',
+            (user_id,),
+        )
+        cursor.execute('RELEASE SAVEPOINT stripe_subscription_clear')
+    except psycopg.Error:
+        cursor.execute('ROLLBACK TO SAVEPOINT stripe_subscription_clear')
+
+def deactivate_user_by_subscription(cursor, subscription_id, client_id=None, customer_id=None):
+    if subscription_id:
+        try:
+            cursor.execute('SAVEPOINT stripe_subscription_deactivate')
+            cursor.execute(
+                '''
+                UPDATE public.users
+                SET pro_user = false, stripe_subscription_id = NULL
+                WHERE stripe_subscription_id = %s
+                ''',
+                (subscription_id,),
+            )
+            if cursor.rowcount:
+                cursor.execute('RELEASE SAVEPOINT stripe_subscription_deactivate')
+                return
+            cursor.execute('RELEASE SAVEPOINT stripe_subscription_deactivate')
+        except psycopg.Error:
+            cursor.execute('ROLLBACK TO SAVEPOINT stripe_subscription_deactivate')
+
+    if client_id and str(client_id).isdigit():
+        set_user_pro_status(cursor, int(client_id), False)
+        return
+
+    if customer_id:
+        try:
+            cursor.execute('SAVEPOINT stripe_customer_deactivate')
+            cursor.execute(
+                '''
+                UPDATE public.users
+                SET pro_user = false, stripe_subscription_id = NULL
+                WHERE stripe_customer_id = %s
+                ''',
+                (customer_id,),
+            )
+            cursor.execute('RELEASE SAVEPOINT stripe_customer_deactivate')
+        except psycopg.Error:
+            cursor.execute('ROLLBACK TO SAVEPOINT stripe_customer_deactivate')
+
 _load_env_file()
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'dev')
 DB_URL = os.environ.get('DB_URL')
 ADMIN_ACC_ID = 7
+_stripe_schema_ready = False
+_messages_schema_ready = False
+
+
+def ensure_stripe_schema(conn):
+    global _stripe_schema_ready
+    if _stripe_schema_ready:
+        return
+    with conn.cursor() as cursor:
+        cursor.execute('ALTER TABLE public.users ADD COLUMN IF NOT EXISTS stripe_customer_id text')
+        cursor.execute('ALTER TABLE public.users ADD COLUMN IF NOT EXISTS stripe_subscription_id text')
+    _stripe_schema_ready = True
+
+
+def ensure_messages_schema(conn):
+    global _messages_schema_ready
+    if _messages_schema_ready:
+        return
+    with conn.cursor() as cursor:
+        cursor.execute(
+            "ALTER TABLE public.messages ADD COLUMN IF NOT EXISTS attachments jsonb DEFAULT '[]'::jsonb"
+        )
+        cursor.execute(
+            '''
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'messages'
+              AND column_name = 'attatchments'
+            '''
+        )
+        if cursor.fetchone():
+            cursor.execute(
+                '''
+                UPDATE public.messages
+                SET attachments = attatchments
+                WHERE attachments IS NULL OR attachments = '[]'::jsonb
+                '''
+            )
+    _messages_schema_ready = True
 
 
 def get_db_connection():
-    return psycopg.connect(DB_URL, prepare_threshold=None)
+    conn = psycopg.connect(DB_URL, prepare_threshold=None)
+    try:
+        ensure_stripe_schema(conn)
+        ensure_messages_schema(conn)
+    except psycopg.Error as exc:
+        conn.rollback()
+        print(f'Could not ensure database schema: {exc}')
+    return conn
 
 
 @app.route('/')
@@ -113,7 +498,7 @@ def dashboard():
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
-                'SELECT id, email, chats FROM public.users WHERE id = %s',
+                'SELECT id, email, chats, COALESCE(pro_user, false) FROM public.users WHERE id = %s',
                 (user_id,),
             )
             row = cursor.fetchone()
@@ -122,22 +507,52 @@ def dashboard():
                 session.clear()
                 return redirect(url_for('sign_in'))
 
+            sync_user_subscription_from_stripe(cursor, user_id, row[1])
+
+            cursor.execute(
+                'SELECT COALESCE(pro_user, false) FROM public.users WHERE id = %s',
+                (user_id,),
+            )
+            pro_user = is_pro_user(cursor.fetchone()[0])
+
             chat_ids = parse_chat_ids(row[2])
             chats = []
             if chat_ids:
                 cursor.execute(
-                    'SELECT COALESCE(name, email), id FROM public.users WHERE id = ANY(%s)',
+                    'SELECT COALESCE(name, email), id, COALESCE(pro_user, false) FROM public.users WHERE id = ANY(%s)',
                     (chat_ids,),
                 )
                 chats = cursor.fetchall()
 
-    return render_template('dashboard.html', user_id=row[0], email=row[1], chats=chats)
+    return render_template(
+        'dashboard.html',
+        user_id=row[0],
+        email=row[1],
+        chats=chats,
+        pro_user=pro_user,
+    )
 
 @app.route('/settings')
 def settings():
     if not session.get('user_id'):
         return redirect(url_for('sign_in'))
-    return render_template('settings.html', email=session.get('email'))
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            sync_user_subscription_from_stripe(
+                cursor,
+                session.get('user_id'),
+                session.get('email'),
+            )
+            pro_user = get_user_pro_status(cursor, session.get('user_id'))
+
+    plan = 'pro' if pro_user else 'free'
+    return render_template(
+        'settings.html',
+        email=session.get('email'),
+        plan=plan,
+        pro_user=pro_user,
+    )
 
 @app.route('/sign-in')
 def sign_in():
@@ -222,6 +637,7 @@ def chat(chat_id):
                 return redirect(url_for('dashboard'))
 
             site_url = get_site_url(cursor, user_id, chat_id)
+            other_pro_user = get_user_pro_status(cursor, chat_id)
 
     is_admin = user_id == ADMIN_ACC_ID
     return render_template(
@@ -229,6 +645,7 @@ def chat(chat_id):
         chat_id=chat_id,
         conversation_list=conversation_list,
         other_persons_name=other_persons_name,
+        other_pro_user=other_pro_user,
         site_url=site_url,
         admin=is_admin,
         user_id=user_id,
@@ -251,15 +668,69 @@ def chat_messages(chat_id):
 
     return jsonify({'messages': messages})
 
+@app.route('/chat/<int:chat_id>/attachment')
+def chat_attachment(chat_id):
+    user_id = session.get('user_id')
+    if not user_id:
+        return '', 401
+
+    path = request.args.get('path', '').strip()
+    if not path or '..' in path or not path.startswith(f'{chat_id}/'):
+        return '', 400
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            if not can_message(user_id, chat_id, cursor):
+                return '', 403
+
+    supabase_url, service_key = get_supabase_config()
+    if not supabase_url or not service_key:
+        return '', 503
+
+    download_url = f'{supabase_url}/storage/v1/object/{ATTACHMENTS_BUCKET}/{quote(path, safe="/")}'
+    req = Request(
+        download_url,
+        headers={
+            'Authorization': f'Bearer {service_key}',
+            'apikey': service_key,
+        },
+    )
+    try:
+        with urlopen(req) as response:
+            data = response.read()
+            mime = response.headers.get('Content-Type', 'application/octet-stream')
+    except HTTPError:
+        return '', 404
+
+    filename = path.rsplit('/', 1)[-1]
+    return Response(
+        data,
+        mimetype=mime,
+        headers={'Content-Disposition': f'inline; filename="{filename}"'},
+    )
+
 @app.route('/chat/<int:chat_id>/send', methods=['POST'])
 def chat_send(chat_id):
     user_id = session.get('user_id')
     if not user_id:
         return jsonify({'error': 'unauthorized'}), 401
 
-    body = (request.json or {}).get('body', '').strip()
-    if not body:
+    if request.content_type and 'multipart/form-data' in request.content_type:
+        body = (request.form.get('body') or '').strip()
+        files = [file for file in request.files.getlist('files') if file and file.filename]
+    else:
+        body = (request.json or {}).get('body', '').strip()
+        files = []
+
+    if not body and not files:
         return jsonify({'error': 'empty message'}), 400
+
+    attachments = []
+    try:
+        for file_storage in files:
+            attachments.append(upload_attachment(file_storage, chat_id))
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
 
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
@@ -271,8 +742,18 @@ def chat_send(chat_id):
                 return jsonify({'error': 'not found'}), 404
 
             cursor.execute(
-                'INSERT INTO public.messages (sender_id, receiver_id, created_at, body) VALUES (%s, %s, %s, %s) RETURNING id',
-                (user_id, chat_id, datetime.now(timezone.utc), body),
+                '''
+                INSERT INTO public.messages (sender_id, receiver_id, created_at, body, attachments)
+                VALUES (%s, %s, %s, %s, %s::jsonb)
+                RETURNING id
+                ''',
+                (
+                    user_id,
+                    chat_id,
+                    datetime.now(timezone.utc),
+                    body,
+                    json.dumps(attachments) if attachments else None,
+                ),
             )
             message_id = cursor.fetchone()[0]
 
@@ -310,19 +791,136 @@ def save_site_url(chat_id):
 def logout():
     session.clear()
     return redirect(url_for('sign_in'))
+@app.route('/billing/success')
+def billing_success():
+    user_id = session.get('user_id')
+    checkout_session_id = request.args.get('session_id')
+    activated = False
 
-@app.route('/create-checkout-session',methods=['POST'])
-def create_checkout_session():
-    stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
-    checkout = stripe.checkout.Session.create(
-        mode="subscription",
-        line_items=[{"price": os.getenv("STRIPE_PRICE_ID"), "quantity": 1}],
-        success_url="https://portal.pixiware.co.uk/billing/success",
-        cancel_url="https://portal.pixiware.co.uk/billing/cancel",
-        metadata={"client_id": "test_client_123"},  # hardcoded for now; real client_id later
+    if user_id and checkout_session_id:
+        configure_stripe()
+        try:
+            checkout_session = stripe.checkout.Session.retrieve(checkout_session_id)
+            metadata = stripe_field(checkout_session, 'metadata', {})
+            client_id = stripe_field(metadata, 'client_id') or stripe_field(checkout_session, 'client_reference_id')
+            if str(client_id) == str(user_id):
+                activated = fulfill_checkout_session(checkout_session)
+        except stripe.error.StripeError as exc:
+            print(f'Could not verify checkout session: {exc}')
+
+    return render_template(
+        'billing-success.html',
+        email=session.get('email'),
+        activated=activated,
     )
-    print('successfully processed payment request')
-    return jsonify({"url": checkout.url})
 
+@app.route('/billing/cancel', methods=['GET', 'POST'])
+def billing_cancel():
+    if request.method == 'GET':
+        return render_template('billing-cancel.html')
+
+    if not session.get('user_id'):
+        return jsonify({'error': 'unauthorized'}), 401
+
+    configure_stripe()
+    if not stripe.api_key:
+        return jsonify({'error': 'billing not configured'}), 500
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            if not get_user_pro_status(cursor, session.get('user_id')):
+                return jsonify({'error': 'no active subscription'}), 400
+
+            cursor.execute(
+                'SELECT stripe_subscription_id FROM public.users WHERE id = %s',
+                (session.get('user_id'),),
+            )
+            row = cursor.fetchone()
+            fallback_subscription_id = row[0] if row else None
+
+            customer_id = get_stripe_customer_id(
+                cursor,
+                session.get('user_id'),
+                session.get('email'),
+            )
+
+    if not customer_id:
+        return jsonify({'error': 'no billing account found'}), 400
+
+    subscription_id = get_active_subscription_id(customer_id, fallback_subscription_id)
+    if not subscription_id:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                set_user_pro_status(cursor, session.get('user_id'), False)
+        return jsonify({'url': url_for('settings')})
+
+    try:
+        stripe.Subscription.cancel(subscription_id)
+    except stripe.error.StripeError as exc:
+        return jsonify({'error': f'could not cancel subscription: {exc.user_message or str(exc)}'}), 400
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            set_user_pro_status(cursor, session.get('user_id'), False)
+
+    return jsonify({'url': url_for('settings')})
+
+
+@app.route('/create-checkout-session', methods=['POST'])
+def create_checkout_session():
+    if not session.get('user_id'):
+        return jsonify({'error': 'unauthorized'}), 401
+
+    configure_stripe()
+    price_id = os.getenv('STRIPE_PRICE_ID')
+    if not stripe.api_key or not price_id:
+        return jsonify({'error': 'billing not configured'}), 500
+
+    user_id = str(session.get('user_id'))
+    checkout = stripe.checkout.Session.create(
+        mode='subscription',
+        line_items=[{'price': price_id, 'quantity': 1}],
+        success_url=url_for('billing_success', _external=True) + '?session_id={CHECKOUT_SESSION_ID}',
+        cancel_url=url_for('billing_cancel', _external=True),
+        customer_email=session.get('email'),
+        client_reference_id=user_id,
+        metadata={'client_id': user_id},
+        subscription_data={'metadata': {'client_id': user_id}},
+    )
+    return jsonify({'url': checkout.url})
+
+@app.route('/stripe/webhook', methods=['POST'])
+def stripe_webhook():
+    configure_stripe()
+    payload = request.get_data()
+    sig = request.headers.get('Stripe-Signature')
+    try:
+        event = stripe.Webhook.construct_event(
+            payload, sig, os.getenv('STRIPE_WEBHOOK_SECRET'),
+        )
+    except (ValueError, stripe.error.SignatureVerificationError):
+        return '', 400
+
+    event_type = event['type']
+    data_object = event['data']['object']
+
+    if event_type == 'checkout.session.completed':
+        print(f'PAID: checkout session {data_object.get("id")}')
+        fulfill_checkout_session(data_object)
+
+    if event_type in ('customer.subscription.deleted', 'customer.subscription.updated'):
+        subscription = data_object
+        status = subscription.get('status')
+        client_id = subscription.get('metadata', {}).get('client_id')
+        subscription_id = subscription.get('id')
+        customer_id = subscription.get('customer')
+
+        if event_type == 'customer.subscription.deleted' or status in ('canceled', 'unpaid', 'incomplete_expired'):
+            print(f'CANCELLED: deactivate subscription {subscription_id} for client {client_id}')
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    deactivate_user_by_subscription(cursor, subscription_id, client_id, customer_id)
+
+    return '', 200
 if __name__ == '__main__':
     app.run()

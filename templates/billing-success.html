@@ -1,0 +1,32 @@
+<html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+        <meta name="theme-color" content="#10b981">
+        <title>Upgrade successful</title>
+        <link rel="stylesheet" href="{{ url_for('static', filename='base_styles.css') }}">
+        <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}">
+    </head>
+    <body class="billing-page">
+        <main class="billing_card billing_card--success">
+            <div class="billing_card__icon" aria-hidden="true">✓</div>
+            <h1>You're all set</h1>
+            <p class="billing_card__lead">
+                {% if activated %}
+                    Welcome to <strong>Pro</strong>{% if email %}, {{ email }}{% endif %}. Your account has been upgraded.
+                {% else %}
+                    Your payment is being confirmed{% if email %} for <strong>{{ email }}</strong>{% endif %}.
+                {% endif %}
+            </p>
+            <p class="billing_card__note">
+                {% if activated %}
+                    You can manage or cancel your subscription any time from Settings → Pricing.
+                {% else %}
+                    If your plan does not update within a minute, open Settings again or contact support.
+                {% endif %}
+            </p>
+            <a class="billing_card__cta" href="{{ url_for('settings') }}">Back to settings</a>
+            <a class="billing_card__link" href="{{ url_for('dashboard') }}">Go to dashboard</a>
+        </main>
+    </body>
+</html>

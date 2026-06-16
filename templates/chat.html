@@ -11,7 +11,10 @@
         <header class="chat_header">
             <div class="chat_header__info">
                 <span class="chat_header__label">Conversation</span>
-                <h1>{{ other_persons_name }}</h1>
+                <h1>
+                    <span class="chat_header__name">{{ other_persons_name }}</span>
+                    {% if other_pro_user %}<span class="pro_badge">Pro</span>{% endif %}
+                </h1>
             </div>
             <a class="chat_header__back" href="{{ url_for('dashboard') }}">← Dashboard</a>
         </header>
@@ -27,7 +30,26 @@
                     {% for conversation in conversation_list %}
                         <div class="conversation_item {% if conversation.sender == 'you' %}conversation_item--you{% endif %}" data-message-id="{{ conversation.id }}">
                             <div class="conversation_item_sender">{{ conversation.sender }}</div>
-                            <div class="conversation_item_body">{{ conversation.body }}</div>
+                            <div class="conversation_item_body">
+                                {% if conversation.body %}
+                                    <div class="conversation_item_text">{{ conversation.body }}</div>
+                                {% endif %}
+                                {% if conversation.attachments %}
+                                    <div class="conversation_attachments">
+                                        {% for att in conversation.attachments %}
+                                            {% if att.mime and att.mime.startswith('image/') %}
+                                                <a class="conversation_attachment conversation_attachment--image" href="{{ att.url }}" target="_blank" rel="noopener">
+                                                    <img src="{{ att.url }}" alt="{{ att.name }}">
+                                                </a>
+                                            {% else %}
+                                                <a class="conversation_attachment conversation_attachment--file" href="{{ att.url }}" target="_blank" rel="noopener">
+                                                    {{ att.name }}
+                                                </a>
+                                            {% endif %}
+                                        {% endfor %}
+                                    </div>
+                                {% endif %}
+                            </div>
                         </div>
                     {% else %}
                         <p class="messages_empty">No messages yet.</p>
@@ -35,8 +57,20 @@
                 </div>
 
                 <form id="message-form" class="message_form">
-                    <input id="message-input" type="text" placeholder="Type a message..." autocomplete="off" required>
-                    <button type="submit">Send</button>
+                    <input type="file" id="message-files" class="message_form__file-input" multiple hidden>
+                    <div class="message_form__composer">
+                        <div id="attachment-preview" class="attachment_preview" hidden></div>
+                        <div class="message_form__row">
+                            <button type="button" class="message_form__attach" id="message-attach" aria-label="Attach file">
+                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                                    <path stroke="currentColor" stroke-width="1.5" stroke-linecap="round" d="M8.5 12.5 14.7 6.3a3.5 3.5 0 1 1 5 5l-7.8 7.8a5 5 0 0 1-7.1-7.1l8.5-8.5"/>
+                                </svg>
+                            </button>
+                            <textarea id="message-input" placeholder="Type a message..." rows="1"></textarea>
+                            <button type="button" class="message_form__send" id="message-send">Send</button>
+                        </div>
+                        <p class="message_form__error" id="message-send-error" hidden></p>
+                    </div>
                 </form>
             </div>
 
@@ -88,6 +122,12 @@
             const messagesEl = document.getElementById('messages');
             const form = document.getElementById('message-form');
             const input = document.getElementById('message-input');
+            const sendBtn = document.getElementById('message-send');
+            const sendError = document.getElementById('message-send-error');
+            const attachBtn = document.getElementById('message-attach');
+            const fileInput = document.getElementById('message-files');
+            const attachmentPreview = document.getElementById('attachment-preview');
+            let pendingFiles = [];
             const chatWorkspace = document.getElementById('chat-workspace');
             const sitePreviewToolbar = document.getElementById('site_preview_toolbar');
             const siteFullscreen = document.getElementById('site_fullscreen');
@@ -109,6 +149,26 @@
                 return messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 80;
             }
 
+            function buildAttachmentsHtml(attachments) {
+                if (!attachments || !attachments.length) {
+                    return '';
+                }
+
+                const items = attachments.map((attachment) => {
+                    const name = escapeHtml(attachment.name || 'Attachment');
+                    const url = escapeHtml(attachment.url || '#');
+                    const mime = attachment.mime || '';
+
+                    if (mime.startsWith('image/')) {
+                        return `<a class="conversation_attachment conversation_attachment--image" href="${url}" target="_blank" rel="noopener"><img src="${url}" alt="${name}"></a>`;
+                    }
+
+                    return `<a class="conversation_attachment conversation_attachment--file" href="${url}" target="_blank" rel="noopener">${name}</a>`;
+                }).join('');
+
+                return `<div class="conversation_attachments">${items}</div>`;
+            }
+
             function buildMessageElement(message, isNew) {
                 const item = document.createElement('div');
                 item.className = 'conversation_item' + (message.sender === 'you' ? ' conversation_item--you' : '');
@@ -116,9 +176,15 @@
                     item.classList.add('conversation_item--new');
                 }
                 item.dataset.messageId = message.id;
+
+                const bodyHtml = message.body
+                    ? `<div class="conversation_item_text">${escapeHtml(message.body)}</div>`
+                    : '';
+                const attachmentsHtml = buildAttachmentsHtml(message.attachments);
+
                 item.innerHTML = `
                     <div class="conversation_item_sender">${escapeHtml(message.sender)}</div>
-                    <div class="conversation_item_body">${escapeHtml(message.body)}</div>
+                    <div class="conversation_item_body">${bodyHtml}${attachmentsHtml}</div>
                 `;
                 return item;
             }
@@ -238,23 +304,111 @@
                 }
             });
 
-            form.addEventListener('submit', async (event) => {
-                event.preventDefault();
-                const body = input.value.trim();
-                if (!body) {
+            function renderAttachmentPreview() {
+                if (!pendingFiles.length) {
+                    attachmentPreview.hidden = true;
+                    attachmentPreview.innerHTML = '';
                     return;
                 }
 
-                const response = await fetch(`/chat/${chatId}/send`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ body }),
+                attachmentPreview.hidden = false;
+                attachmentPreview.innerHTML = pendingFiles.map((file, index) => `
+                    <span class="attachment_preview__item">
+                        <span class="attachment_preview__name">${escapeHtml(file.name)}</span>
+                        <button type="button" class="attachment_preview__remove" data-index="${index}" aria-label="Remove ${escapeHtml(file.name)}">
+                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                                <path stroke="currentColor" stroke-width="1.5" stroke-linecap="round" d="M3 3l6 6M9 3 3 9"/>
+                            </svg>
+                        </button>
+                    </span>
+                `).join('');
+
+                attachmentPreview.querySelectorAll('.attachment_preview__remove').forEach((button) => {
+                    button.addEventListener('click', () => {
+                        pendingFiles.splice(Number(button.dataset.index), 1);
+                        renderAttachmentPreview();
+                    });
+                });
+            }
+
+            function autoResizeInput() {
+                input.style.height = 'auto';
+                input.style.height = `${Math.min(input.scrollHeight, 180)}px`;
+            }
+
+            function showSendError(message) {
+                if (!message) {
+                    sendError.hidden = true;
+                    sendError.textContent = '';
+                    return;
+                }
+                sendError.textContent = message;
+                sendError.hidden = false;
+            }
+
+            async function sendMessage() {
+                const body = input.value.trim();
+                if (!body && !pendingFiles.length) {
+                    return;
+                }
+
+                showSendError('');
+
+                const formData = new FormData();
+                formData.append('body', body);
+                pendingFiles.forEach((file) => {
+                    formData.append('files', file);
                 });
 
-                if (response.ok) {
-                    input.value = '';
-                    await loadMessages(true);
+                sendBtn.disabled = true;
+                attachBtn.disabled = true;
+                sendBtn.textContent = 'Sending…';
+
+                try {
+                    const response = await fetch(`/chat/${chatId}/send`, {
+                        method: 'POST',
+                        body: formData,
+                    });
+
+                    const data = await response.json().catch(() => ({}));
+
+                    if (response.ok) {
+                        input.value = '';
+                        pendingFiles = [];
+                        fileInput.value = '';
+                        renderAttachmentPreview();
+                        autoResizeInput();
+                        await loadMessages(true);
+                        return;
+                    }
+
+                    showSendError(data.error || 'Could not send message');
+                } catch (error) {
+                    showSendError('Could not send message. Check your connection.');
+                } finally {
+                    sendBtn.disabled = false;
+                    attachBtn.disabled = false;
+                    sendBtn.textContent = 'Send';
                 }
+            }
+
+            form.addEventListener('submit', (event) => {
+                event.preventDefault();
+            });
+
+            input.addEventListener('input', autoResizeInput);
+            autoResizeInput();
+
+            sendBtn.addEventListener('click', sendMessage);
+
+            attachBtn.addEventListener('click', () => {
+                fileInput.click();
+            });
+
+            fileInput.addEventListener('change', () => {
+                pendingFiles = [...pendingFiles, ...Array.from(fileInput.files || [])];
+                fileInput.value = '';
+                renderAttachmentPreview();
             });
 
             setInterval(() => {

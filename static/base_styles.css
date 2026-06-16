@@ -203,6 +203,45 @@ body.auth-page .auth-footer {
     font-weight: 600;
 }
 
+.pro_badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.2rem 0.55rem;
+    border-radius: 999px;
+    background: var(--gradient-signature);
+    color: #fff;
+    font-size: 0.625rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    vertical-align: middle;
+    line-height: 1.2;
+}
+
+.plan_badge {
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+    padding: 0.2rem 0.55rem;
+    border-radius: 999px;
+    font-size: 0.625rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    line-height: 1.2;
+}
+
+.plan_badge--pro {
+    background: var(--gradient-signature);
+    color: #fff;
+}
+
+.plan_badge--free {
+    background: var(--color-bg-subtle);
+    color: var(--color-text-muted);
+    border: 1px solid var(--color-border);
+}
+
 input,
 button {
     font-family: var(--font-sans);

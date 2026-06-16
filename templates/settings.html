@@ -8,12 +8,13 @@
         <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}">
     </head>
     <body class="settings-page">
-        {% set plan = 'free' %}
-
         <header class="app_header">
             <div class="app_header__meta">
                 <h1>Settings</h1>
-                <p>{{ email }}</p>
+                <p class="app_header__plan">
+                    {{ email }}
+                    {% if pro_user %}<span class="pro_badge">Pro</span>{% endif %}
+                </p>
             </div>
             <a class="settings_back" href="{{ url_for('dashboard') }}">← Dashboard</a>
         </header>
@@ -27,7 +28,10 @@
             <div class="settings_content">
                 <section class="settings_section settings_panel-view settings_panel-view--active" id="panel-account">
                     <h2>Account</h2>
-                    <p class="settings_section__hint">Manage your portal session.</p>
+                    <p class="settings_section__hint">
+                        Manage your portal session.
+                        {% if pro_user %}You're on the <strong>Pro</strong> plan.{% else %}You're on the <strong>Free</strong> plan.{% endif %}
+                    </p>
                     <a class="settings_logout" href="{{ url_for('logout') }}">Log out</a>
                 </section>
 
@@ -44,7 +48,7 @@
                                 <span class="pricing_card__price-build"><strong>£0</strong> to build</span>
                                 <span class="pricing_card__price-monthly"><strong>£25</strong>/month for everything after</span>
                             </div>
-                            <p class="pricing_card__cta">Enquire now, it's free →</p>
+                            <p class="pricing_card__cta">Upgrade now →</p>
                         </div>
 
                         <p class="pricing_card__note">
@@ -66,9 +70,12 @@
                         </ul>
 
                         {% if plan == 'free' %}
-                            <button type="button" class="pricing_upgrade">Upgrade</button>
+                            <button type="button" class="pricing_upgrade" id="pricing-upgrade">Upgrade</button>
+                            <p class="pricing_upgrade__error" id="pricing-upgrade-error" hidden></p>
                         {% else %}
-                            <p class="pricing_card__pro-note">You're on Pro. Billing management coming soon.</p>
+                            <button type="button" class="pricing_cancel" id="pricing-cancel">Cancel subscription</button>
+                            <p class="pricing_upgrade__error" id="pricing-cancel-error" hidden></p>
+                            <p class="pricing_card__pro-note">Manage or cancel your subscription in Stripe's secure billing portal.</p>
                         {% endif %}
                     </div>
                 </section>
@@ -91,6 +98,51 @@
                     });
                 });
             });
+        </script>
+        <script>
+            async function startBillingRedirect(button, errorEl, url) {
+                errorEl.hidden = true;
+                errorEl.textContent = '';
+                const originalText = button.textContent;
+                button.disabled = true;
+                button.textContent = 'Redirecting…';
+
+                try {
+                    const response = await fetch(url, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                    });
+                    const data = await response.json();
+
+                    if (!response.ok || !data.url) {
+                        throw new Error(data.error || 'Could not open billing');
+                    }
+
+                    window.location.href = data.url;
+                } catch (error) {
+                    button.disabled = false;
+                    button.textContent = originalText;
+                    errorEl.textContent = error.message || 'Something went wrong. Please try again.';
+                    errorEl.hidden = false;
+                }
+            }
+
+            const upgradeBtn = document.getElementById('pricing-upgrade');
+            const upgradeError = document.getElementById('pricing-upgrade-error');
+            const cancelBtn = document.getElementById('pricing-cancel');
+            const cancelError = document.getElementById('pricing-cancel-error');
+
+            if (upgradeBtn) {
+                upgradeBtn.addEventListener('click', () => {
+                    startBillingRedirect(upgradeBtn, upgradeError, '{{ url_for("create_checkout_session") }}');
+                });
+            }
+
+            if (cancelBtn) {
+                cancelBtn.addEventListener('click', () => {
+                    startBillingRedirect(cancelBtn, cancelError, '{{ url_for("billing_cancel") }}');
+                });
+            }
         </script>
     </body>
 </html>

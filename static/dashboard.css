@@ -69,7 +69,10 @@ body:has(.chat_container) .app_header {
 }
 
 .chat_item a {
-    display: block;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
     padding: 0.75rem 0.875rem;
     background: var(--color-bg-subtle);
     border: 1px solid var(--color-border);
@@ -78,6 +81,20 @@ body:has(.chat_container) .app_header {
     font-size: 0.875rem;
     font-weight: 500;
     transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.chat_item__name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.app_header__plan {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
 }
 
 .chat_item a:hover {
@@ -414,11 +431,136 @@ body.settings-page .app_header {
     opacity: 0.92;
 }
 
+.pricing_cancel {
+    width: 100%;
+    padding: 0.75rem 1rem;
+    margin-bottom: 0.75rem;
+    border: 1px solid #fecaca;
+    border-radius: var(--radius-sm);
+    background: #fff;
+    color: #b91c1c;
+    font-size: 0.9375rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.pricing_cancel:hover {
+    border-color: #f87171;
+    background: #fef2f2;
+}
+
+.pricing_cancel:disabled {
+    opacity: 0.65;
+    cursor: wait;
+}
+
 .pricing_card__pro-note {
     margin: 0;
     font-size: 0.8125rem;
     color: var(--color-text-muted);
     text-align: center;
+}
+
+.pricing_upgrade:disabled {
+    opacity: 0.65;
+    cursor: wait;
+}
+
+.pricing_upgrade__error {
+    margin: 0.75rem 0 0;
+    font-size: 0.8125rem;
+    color: #dc2626;
+    text-align: center;
+}
+
+body.billing-page {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    min-height: 100dvh;
+    padding: max(1.5rem, env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right)) max(1.5rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left));
+    background: var(--color-bg-subtle);
+}
+
+.billing_card {
+    width: 100%;
+    max-width: 420px;
+    padding: 2rem 1.75rem;
+    text-align: center;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-md);
+}
+
+.billing_card--success {
+    border-color: rgba(16, 185, 129, 0.35);
+}
+
+.billing_card__icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 3rem;
+    height: 3rem;
+    margin-bottom: 1rem;
+    border-radius: 999px;
+    background: var(--gradient-signature);
+    color: #fff;
+    font-size: 1.5rem;
+    font-weight: 700;
+}
+
+.billing_card h1 {
+    margin: 0 0 0.75rem;
+    font-size: 1.375rem;
+}
+
+.billing_card__lead {
+    margin: 0 0 0.75rem;
+    font-size: 0.9375rem;
+    line-height: 1.6;
+    color: var(--color-text-muted);
+}
+
+.billing_card__note {
+    margin: 0 0 1.5rem;
+    padding: 0.75rem 1rem;
+    font-size: 0.8125rem;
+    line-height: 1.55;
+    color: var(--color-text-muted);
+    background: var(--color-bg-subtle);
+    border-radius: var(--radius-sm);
+    border: 1px dashed var(--color-border);
+}
+
+.billing_card__cta {
+    display: block;
+    width: 100%;
+    padding: 0.875rem 1rem;
+    margin-bottom: 0.75rem;
+    border-radius: var(--radius-sm);
+    background: var(--gradient-signature);
+    color: #fff;
+    font-size: 0.9375rem;
+    font-weight: 600;
+}
+
+.billing_card__cta:hover {
+    color: #fff;
+    opacity: 0.92;
+}
+
+.billing_card__link {
+    display: inline-block;
+    font-size: 0.875rem;
+    color: var(--color-text-muted);
+}
+
+.billing_card__link:hover {
+    color: var(--color-emerald-dark);
 }
 
 @media (max-width: 768px) {
