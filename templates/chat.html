@@ -88,6 +88,7 @@
                 <div class="site_preview__toolbar" id="site_preview_toolbar" {% if not site_url %}hidden{% endif %}>
                     <p class="site_preview__title">Site preview</p>
                     <div class="site_preview__actions">
+                        <a class="site_preview__open" id="open_site_tab" href="{{ site_url or '#' }}" target="_blank" rel="noopener noreferrer" {% if not site_url %}hidden{% endif %}>Open site ↗</a>
                         <button type="button" class="site_preview__fullscreen" id="open_fullscreen" aria-label="View site in full screen">
                             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                                 <path stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3m10 0h3a2 2 0 0 0 2-2v-3"/>
@@ -100,6 +101,10 @@
                 <div class="site_preview__frame" id="site_preview_frame">
                     {% if site_url %}
                         <iframe id="site_iframe" src="{{ site_url }}" title="Site preview"></iframe>
+                        <div class="site_preview__fallback" id="site_preview_fallback" hidden>
+                            <p class="site_preview__fallback-text">This site cannot be embedded here. Open it in a new tab instead.</p>
+                            <a class="site_preview__fallback-link" href="{{ site_url }}" target="_blank" rel="noopener noreferrer">Open {{ site_url }}</a>
+                        </div>
                     {% else %}
                         <p class="site_preview__empty">You'll see your site here soon.</p>
                     {% endif %}
@@ -130,6 +135,8 @@
             let pendingFiles = [];
             const chatWorkspace = document.getElementById('chat-workspace');
             const sitePreviewToolbar = document.getElementById('site_preview_toolbar');
+            const sitePreviewFallback = document.getElementById('site_preview_fallback');
+            const openSiteTab = document.getElementById('open_site_tab');
             const siteFullscreen = document.getElementById('site_fullscreen');
             const siteFullscreenFrame = document.getElementById('site_fullscreen_frame');
             let lastFingerprint = getFingerprintFromDom();
@@ -251,13 +258,57 @@
                 renderMessages(data.messages, forceScroll);
             }
 
+            function updateSiteLinks(url) {
+                if (openSiteTab) {
+                    openSiteTab.href = url;
+                    openSiteTab.hidden = !url;
+                }
+                if (sitePreviewFallback) {
+                    const link = sitePreviewFallback.querySelector('.site_preview__fallback-link');
+                    if (link) {
+                        link.href = url;
+                        link.textContent = `Open ${url}`;
+                    }
+                }
+            }
+
             function showSitePreview(url) {
                 currentSiteUrl = url;
+                updateSiteLinks(url);
                 const frameWrap = document.getElementById('site_preview_frame');
-                frameWrap.innerHTML = `<iframe id="site_iframe" src="${escapeHtml(url)}" title="Site preview"></iframe>`;
+                frameWrap.innerHTML = `
+                    <iframe id="site_iframe" src="${escapeHtml(url)}" title="Site preview"></iframe>
+                    <div class="site_preview__fallback" id="site_preview_fallback" hidden>
+                        <p class="site_preview__fallback-text">This site cannot be embedded here. Open it in a new tab instead.</p>
+                        <a class="site_preview__fallback-link" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">Open ${escapeHtml(url)}</a>
+                    </div>
+                `;
                 if (sitePreviewToolbar) {
                     sitePreviewToolbar.hidden = false;
                 }
+                monitorSitePreview();
+            }
+
+            function monitorSitePreview() {
+                const iframe = document.getElementById('site_iframe');
+                const fallback = document.getElementById('site_preview_fallback');
+                if (!iframe || !fallback || !currentSiteUrl) {
+                    return;
+                }
+
+                if (window.location.protocol === 'https:' && currentSiteUrl.startsWith('http:')) {
+                    iframe.hidden = true;
+                    fallback.hidden = false;
+                    return;
+                }
+
+                iframe.hidden = false;
+                fallback.hidden = true;
+
+                iframe.addEventListener('error', () => {
+                    iframe.hidden = true;
+                    fallback.hidden = false;
+                });
             }
 
             function openSiteFullscreen() {
@@ -439,6 +490,11 @@
                         setMobileView('site');
                     }
                 });
+            }
+
+            if (currentSiteUrl) {
+                updateSiteLinks(currentSiteUrl);
+                monitorSitePreview();
             }
         </script>
     </body>

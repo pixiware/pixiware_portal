@@ -100,10 +100,14 @@ def parse_attachments(raw):
     if not raw:
         return []
     if isinstance(raw, str):
-        return json.loads(raw)
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return []
+        return parsed if isinstance(parsed, list) else []
     if isinstance(raw, list):
         return raw
-    return list(raw)
+    return []
 
 def enrich_attachments(attachments, chat_id):
     enriched = []
@@ -132,7 +136,12 @@ def resolve_attachment_mime(filename, reported_mime):
 
     raise ValueError('file type is not allowed')
 
-def upload_attachment(file_storage, chat_id):
+def can_access_attachment_path(path, user_id, chat_id):
+    if not path or '..' in path:
+        return False
+    return path.startswith(f'{user_id}/') or path.startswith(f'{chat_id}/')
+
+def upload_attachment(file_storage, sender_id):
     supabase_url, service_key = get_supabase_config()
     if not supabase_url or not service_key:
         raise ValueError('file storage is not configured')
@@ -145,7 +154,7 @@ def upload_attachment(file_storage, chat_id):
 
     mime = resolve_attachment_mime(file_storage.filename, file_storage.mimetype)
     safe_name = secure_filename(file_storage.filename) or 'file'
-    object_path = f'{chat_id}/{uuid.uuid4().hex}_{safe_name}'
+    object_path = f'{sender_id}/{uuid.uuid4().hex}_{safe_name}'
     upload_url = f'{supabase_url}/storage/v1/object/{ATTACHMENTS_BUCKET}/{object_path}'
 
     req = Request(
@@ -203,6 +212,14 @@ def fetch_conversation(cursor, user_id, chat_id):
         for msg_id, sender_id, body, attachments in cursor.fetchall()
     ]
     return other_name, messages
+
+def attachment_error_response(message, status_code):
+    return (
+        f'<html><body style="font-family:sans-serif;padding:2rem;text-align:center">'
+        f'<p>{message}</p></body></html>',
+        status_code,
+        {'Content-Type': 'text/html; charset=utf-8'},
+    )
 
 def get_preview_user_id(user_id, chat_id):
     if user_id == ADMIN_ACC_ID:
@@ -672,20 +689,20 @@ def chat_messages(chat_id):
 def chat_attachment(chat_id):
     user_id = session.get('user_id')
     if not user_id:
-        return '', 401
+        return attachment_error_response('Sign in to view this file.', 401)
 
     path = request.args.get('path', '').strip()
-    if not path or '..' in path or not path.startswith(f'{chat_id}/'):
-        return '', 400
+    if not can_access_attachment_path(path, user_id, chat_id):
+        return attachment_error_response('This file is not available.', 400)
 
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
             if not can_message(user_id, chat_id, cursor):
-                return '', 403
+                return attachment_error_response('You do not have access to this chat.', 403)
 
     supabase_url, service_key = get_supabase_config()
     if not supabase_url or not service_key:
-        return '', 503
+        return attachment_error_response('File storage is not configured.', 503)
 
     download_url = f'{supabase_url}/storage/v1/object/{ATTACHMENTS_BUCKET}/{quote(path, safe="/")}'
     req = Request(
@@ -700,13 +717,14 @@ def chat_attachment(chat_id):
             data = response.read()
             mime = response.headers.get('Content-Type', 'application/octet-stream')
     except HTTPError:
-        return '', 404
+        return attachment_error_response('File not found.', 404)
 
     filename = path.rsplit('/', 1)[-1]
+    display_name = filename.split('_', 1)[1] if '_' in filename else filename
     return Response(
         data,
         mimetype=mime,
-        headers={'Content-Disposition': f'inline; filename="{filename}"'},
+        headers={'Content-Disposition': f'inline; filename="{display_name}"'},
     )
 
 @app.route('/chat/<int:chat_id>/send', methods=['POST'])
@@ -728,7 +746,7 @@ def chat_send(chat_id):
     attachments = []
     try:
         for file_storage in files:
-            attachments.append(upload_attachment(file_storage, chat_id))
+            attachments.append(upload_attachment(file_storage, user_id))
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
 
@@ -923,4 +941,5 @@ def stripe_webhook():
 
     return '', 200
 if __name__ == '__main__':
-    app.run()
+    port = int(os.environ.get('PORT', 5001))
+    app.run(host='0.0.0.0', port=port)
