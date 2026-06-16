@@ -296,7 +296,10 @@
                     return;
                 }
 
-                if (window.location.protocol === 'https:' && currentSiteUrl.startsWith('http:')) {
+                const isMixedContent = window.location.protocol === 'https:'
+                    && currentSiteUrl.startsWith('http://');
+
+                if (isMixedContent) {
                     iframe.hidden = true;
                     fallback.hidden = false;
                     return;
@@ -304,11 +307,6 @@
 
                 iframe.hidden = false;
                 fallback.hidden = true;
-
-                iframe.addEventListener('error', () => {
-                    iframe.hidden = true;
-                    fallback.hidden = false;
-                });
             }
 
             function openSiteFullscreen() {
