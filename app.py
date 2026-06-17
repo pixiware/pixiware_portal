@@ -10,6 +10,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
+from werkzeug.middleware.proxy_fix import ProxyFix
 import stripe
 
 ATTACHMENTS_BUCKET = 'message_attatchments'
@@ -444,11 +445,22 @@ def deactivate_user_by_subscription(cursor, subscription_id, client_id=None, cus
 
 _load_env_file()
 app = Flask(__name__)
+app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 app.secret_key = os.environ.get('SECRET_KEY', 'dev')
+APP_URL = (os.environ.get('APP_URL') or '').rstrip('/')
+if APP_URL.startswith('https://'):
+    app.config['SESSION_COOKIE_SECURE'] = True
+    app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 DB_URL = os.environ.get('DB_URL')
 ADMIN_ACC_ID = 7
 _stripe_schema_ready = False
 _messages_schema_ready = False
+
+
+def external_url(endpoint, **values):
+    if APP_URL:
+        return f'{APP_URL}{url_for(endpoint, _external=False, **values)}'
+    return url_for(endpoint, _external=True, **values)
 
 
 def ensure_stripe_schema(conn):
@@ -898,8 +910,8 @@ def create_checkout_session():
     checkout = stripe.checkout.Session.create(
         mode='subscription',
         line_items=[{'price': price_id, 'quantity': 1}],
-        success_url=url_for('billing_success', _external=True) + '?session_id={CHECKOUT_SESSION_ID}',
-        cancel_url=url_for('billing_cancel', _external=True),
+        success_url=external_url('billing_success') + '?session_id={CHECKOUT_SESSION_ID}',
+        cancel_url=external_url('billing_cancel'),
         customer_email=session.get('email'),
         client_reference_id=user_id,
         metadata={'client_id': user_id},
