@@ -270,7 +270,36 @@ def stripe_field(obj, key, default=None):
     except Exception:
         return getattr(obj, key, default)
 
+def is_stale_stripe_reference_error(exc):
+    if not isinstance(exc, stripe.error.StripeError):
+        return False
+    message = str(exc)
+    return (
+        'No such customer' in message
+        or 'No such subscription' in message
+        or 'similar object exists in test mode' in message
+        or 'similar object exists in live mode' in message
+    )
+
+def clear_stripe_billing_ids(cursor, user_id):
+    try:
+        cursor.execute('SAVEPOINT stripe_billing_clear')
+        cursor.execute(
+            '''
+            UPDATE public.users
+            SET stripe_customer_id = NULL,
+                stripe_subscription_id = NULL,
+                pro_user = false
+            WHERE id = %s
+            ''',
+            (user_id,),
+        )
+        cursor.execute('RELEASE SAVEPOINT stripe_billing_clear')
+    except psycopg.Error:
+        cursor.execute('ROLLBACK TO SAVEPOINT stripe_billing_clear')
+
 def get_stripe_customer_id(cursor, user_id, email):
+    stored_id = None
     try:
         cursor.execute('SAVEPOINT stripe_customer_lookup')
         cursor.execute(
@@ -280,12 +309,29 @@ def get_stripe_customer_id(cursor, user_id, email):
         row = cursor.fetchone()
         cursor.execute('RELEASE SAVEPOINT stripe_customer_lookup')
         if row and row[0]:
-            return row[0]
+            stored_id = row[0]
     except psycopg.Error:
         cursor.execute('ROLLBACK TO SAVEPOINT stripe_customer_lookup')
 
     configure_stripe()
-    customers = stripe.Customer.list(email=email, limit=1)
+    if stored_id:
+        try:
+            stripe.Customer.retrieve(stored_id)
+            return stored_id
+        except stripe.error.StripeError as exc:
+            if is_stale_stripe_reference_error(exc):
+                print(f'Clearing stale Stripe customer {stored_id} for user {user_id}')
+                clear_stripe_billing_ids(cursor, user_id)
+            else:
+                print(f'Could not verify Stripe customer {stored_id}: {exc}')
+                return None
+
+    try:
+        customers = stripe.Customer.list(email=email, limit=1)
+    except stripe.error.StripeError as exc:
+        print(f'Could not look up Stripe customer for {email}: {exc}')
+        return None
+
     if not customers.data:
         return None
 
@@ -308,10 +354,17 @@ def get_active_subscription_id(customer_id, fallback_subscription_id=None):
             status = stripe_field(subscription, 'status')
             if status and status not in ('canceled', 'incomplete_expired'):
                 return fallback_subscription_id
-        except stripe.error.StripeError:
-            pass
+        except stripe.error.StripeError as exc:
+            if is_stale_stripe_reference_error(exc):
+                pass
+            else:
+                print(f'Could not retrieve subscription {fallback_subscription_id}: {exc}')
 
-    subscriptions = stripe.Subscription.list(customer=customer_id, status='all', limit=10)
+    try:
+        subscriptions = stripe.Subscription.list(customer=customer_id, status='all', limit=10)
+    except stripe.error.StripeError as exc:
+        print(f'Could not list subscriptions for {customer_id}: {exc}')
+        return None
     for subscription in subscriptions.data:
         status = stripe_field(subscription, 'status')
         if status and status not in ('canceled', 'incomplete_expired'):
@@ -375,7 +428,12 @@ def sync_user_subscription_from_stripe(cursor, user_id, email):
     if not customer_id:
         return get_user_pro_status(cursor, user_id)
 
-    subscriptions = stripe.Subscription.list(customer=customer_id, status='active', limit=1)
+    try:
+        subscriptions = stripe.Subscription.list(customer=customer_id, status='active', limit=1)
+    except stripe.error.StripeError as exc:
+        print(f'Could not sync subscription for user {user_id}: {exc}')
+        return get_user_pro_status(cursor, user_id)
+
     has_active = bool(subscriptions.data)
 
     if has_active:
@@ -907,16 +965,24 @@ def create_checkout_session():
         return jsonify({'error': 'billing not configured'}), 500
 
     user_id = str(session.get('user_id'))
-    checkout = stripe.checkout.Session.create(
-        mode='subscription',
-        line_items=[{'price': price_id, 'quantity': 1}],
-        success_url=external_url('billing_success') + '?session_id={CHECKOUT_SESSION_ID}',
-        cancel_url=external_url('billing_cancel'),
-        customer_email=session.get('email'),
-        client_reference_id=user_id,
-        metadata={'client_id': user_id},
-        subscription_data={'metadata': {'client_id': user_id}},
-    )
+    try:
+        checkout = stripe.checkout.Session.create(
+            mode='subscription',
+            line_items=[{'price': price_id, 'quantity': 1}],
+            success_url=external_url('billing_success') + '?session_id={CHECKOUT_SESSION_ID}',
+            cancel_url=external_url('billing_cancel'),
+            customer_email=session.get('email'),
+            client_reference_id=user_id,
+            metadata={'client_id': user_id},
+            subscription_data={'metadata': {'client_id': user_id}},
+        )
+    except stripe.error.StripeError as exc:
+        print(f'Checkout session failed: {exc}')
+        message = exc.user_message or str(exc)
+        if 'No such price' in message:
+            message = 'Billing is misconfigured. The price ID does not match your live Stripe account.'
+        return jsonify({'error': message}), 400
+
     return jsonify({'url': checkout.url})
 
 @app.route('/stripe/webhook', methods=['POST'])

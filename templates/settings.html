@@ -112,13 +112,18 @@
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                     });
-                    const data = await response.json();
+                    let data = {};
+                    try {
+                        data = await response.json();
+                    } catch (parseError) {
+                        throw new Error('Billing is temporarily unavailable. Please try again.');
+                    }
 
                     if (!response.ok || !data.url) {
                         throw new Error(data.error || 'Could not open billing');
                     }
 
-                    window.location.href = data.url;
+                    window.location.assign(data.url);
                 } catch (error) {
                     button.disabled = false;
                     button.textContent = originalText;
