@@ -946,6 +946,45 @@ def save_site_url(chat_id):
 
     return jsonify({'ok': True, 'site_url': site_url})
 
+@app.route('/notifications/poll')
+def notifications_poll():
+    user_id = session.get('user_id')
+    if not user_id:
+        return jsonify({'error': 'unauthorized'}), 401
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                '''
+                SELECT m.id, m.sender_id, COALESCE(u.name, u.email), m.body
+                FROM public.messages m
+                JOIN public.users u ON u.id = m.sender_id
+                WHERE m.receiver_id = %s
+                ORDER BY m.created_at DESC
+                LIMIT 1
+                ''',
+                (user_id,),
+            )
+            row = cursor.fetchone()
+
+    if not row:
+        return jsonify({'latest': None})
+
+    body = (row[3] or '').strip()
+    if not body:
+        snippet = 'Sent you an attachment'
+    elif len(body) <= 80:
+        snippet = body
+    else:
+        snippet = body[:77] + '...'
+
+    return jsonify({'latest': {
+        'id': row[0],
+        'chat_id': row[1],
+        'from': row[2],
+        'snippet': snippet,
+    }})
+
 @app.route('/logout')
 def logout():
     session.clear()
