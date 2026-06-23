@@ -214,6 +214,42 @@ def fetch_conversation(cursor, user_id, chat_id):
     ]
     return other_name, messages
 
+def upsert_user_presence(cursor, user_id):
+    cursor.execute('SELECT public.upsert_user_presence(%s)', (user_id,))
+
+def set_user_typing(cursor, user_id, chat_id, seconds=5):
+    cursor.execute(
+        'SELECT public.set_user_typing(%s, %s, %s)',
+        (user_id, chat_id, seconds),
+    )
+
+def clear_user_typing(cursor, user_id):
+    cursor.execute(
+        '''
+        UPDATE public.user_presence
+        SET typing_chat_id = NULL, typing_until = NULL
+        WHERE user_id = %s
+        ''',
+        (user_id,),
+    )
+
+def get_chat_presence(cursor, viewer_id, chat_id):
+    # chat_id is the other person; they are typing in this chat when typing_chat_id = viewer_id
+    cursor.execute(
+        '''
+        SELECT
+            last_seen_at > now() - interval '45 seconds' AS is_online,
+            typing_chat_id = %s AND typing_until > now() AS is_typing
+        FROM public.user_presence
+        WHERE user_id = %s
+        ''',
+        (viewer_id, chat_id),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return {'online': False, 'typing': False}
+    return {'online': bool(row[0]), 'typing': bool(row[1])}
+
 def attachment_error_response(message, status_code):
     return (
         f'<html><body style="font-family:sans-serif;padding:2rem;text-align:center">'
@@ -755,6 +791,40 @@ def chat_messages(chat_id):
 
     return jsonify({'messages': messages})
 
+@app.route('/chat/<int:chat_id>/presence', methods=['GET', 'POST'])
+def chat_presence(chat_id):
+    user_id = session.get('user_id')
+    if not user_id:
+        return jsonify({'error': 'unauthorized'}), 401
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            if not can_message(user_id, chat_id, cursor):
+                return jsonify({'error': 'forbidden'}), 403
+
+            if request.method == 'POST':
+                upsert_user_presence(cursor, user_id)
+                return jsonify({'ok': True})
+
+            presence = get_chat_presence(cursor, user_id, chat_id)
+
+    return jsonify(presence)
+
+@app.route('/chat/<int:chat_id>/typing', methods=['POST'])
+def chat_typing(chat_id):
+    user_id = session.get('user_id')
+    if not user_id:
+        return jsonify({'error': 'unauthorized'}), 401
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            if not can_message(user_id, chat_id, cursor):
+                return jsonify({'error': 'forbidden'}), 403
+
+            set_user_typing(cursor, user_id, chat_id)
+
+    return jsonify({'ok': True})
+
 @app.route('/chat/<int:chat_id>/attachment')
 def chat_attachment(chat_id):
     user_id = session.get('user_id')
@@ -844,6 +914,7 @@ def chat_send(chat_id):
                 ),
             )
             message_id = cursor.fetchone()[0]
+            clear_user_typing(cursor, user_id)
 
     return jsonify({'ok': True, 'id': message_id})
 

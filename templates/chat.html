@@ -15,6 +15,7 @@
                     <span class="chat_header__name">{{ other_persons_name }}</span>
                     {% if other_pro_user %}<span class="pro_badge">Pro</span>{% endif %}
                 </h1>
+                <p class="chat_header__status" id="chat-presence-status" aria-live="polite" hidden></p>
             </div>
             <a class="chat_header__back" href="{{ url_for('dashboard') }}">← Dashboard</a>
         </header>
@@ -139,7 +140,9 @@
             const openSiteTab = document.getElementById('open_site_tab');
             const siteFullscreen = document.getElementById('site_fullscreen');
             const siteFullscreenFrame = document.getElementById('site_fullscreen_frame');
+            const presenceStatus = document.getElementById('chat-presence-status');
             let lastFingerprint = getFingerprintFromDom();
+            let lastTypingSent = 0;
             let currentSiteUrl = {{ site_url|tojson if site_url else 'null' }};
 
             function getFingerprintFromDom() {
@@ -256,6 +259,60 @@
                 }
                 const data = await response.json();
                 renderMessages(data.messages, forceScroll);
+            }
+
+            function renderPresence({ online, typing }) {
+                if (!presenceStatus) {
+                    return;
+                }
+
+                if (typing) {
+                    presenceStatus.textContent = 'Typing…';
+                    presenceStatus.className = 'chat_header__status chat_header__status--typing';
+                    presenceStatus.hidden = false;
+                    return;
+                }
+
+                if (online) {
+                    presenceStatus.textContent = 'Online';
+                    presenceStatus.className = 'chat_header__status chat_header__status--online';
+                    presenceStatus.hidden = false;
+                    return;
+                }
+
+                presenceStatus.textContent = '';
+                presenceStatus.className = 'chat_header__status';
+                presenceStatus.hidden = true;
+            }
+
+            async function sendHeartbeat() {
+                try {
+                    await fetch(`/chat/${chatId}/presence`, { method: 'POST' });
+                } catch (error) {
+                    // ignore transient network errors
+                }
+            }
+
+            async function loadPresence() {
+                try {
+                    const response = await fetch(`/chat/${chatId}/presence`);
+                    if (!response.ok) {
+                        return;
+                    }
+                    const data = await response.json();
+                    renderPresence(data);
+                } catch (error) {
+                    // ignore transient network errors
+                }
+            }
+
+            function notifyTyping() {
+                const now = Date.now();
+                if (now - lastTypingSent < 2000) {
+                    return;
+                }
+                lastTypingSent = now;
+                fetch(`/chat/${chatId}/typing`, { method: 'POST' }).catch(() => {});
             }
 
             function updateSiteLinks(url) {
@@ -445,7 +502,10 @@
                 event.preventDefault();
             });
 
-            input.addEventListener('input', autoResizeInput);
+            input.addEventListener('input', () => {
+                autoResizeInput();
+                notifyTyping();
+            });
             autoResizeInput();
 
             sendBtn.addEventListener('click', sendMessage);
@@ -465,6 +525,26 @@
                     loadMessages(false);
                 }
             }, 5000);
+
+            sendHeartbeat();
+            loadPresence();
+            setInterval(() => {
+                if (!document.hidden) {
+                    sendHeartbeat();
+                }
+            }, 25000);
+            setInterval(() => {
+                if (!document.hidden) {
+                    loadPresence();
+                }
+            }, 3000);
+
+            document.addEventListener('visibilitychange', () => {
+                if (!document.hidden) {
+                    sendHeartbeat();
+                    loadPresence();
+                }
+            });
 
             const saveSiteUrlBtn = document.getElementById('save_site_url');
             if (saveSiteUrlBtn) {
