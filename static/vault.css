@@ -166,6 +166,8 @@
 }
 
 /* Items */
+.vault__canvas { -webkit-touch-callout: none; }
+
 .vault_item {
     position: absolute;
     width: 92px;
@@ -177,6 +179,8 @@
     border-radius: var(--radius-md);
     cursor: pointer;
     user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
     touch-action: none;
     transition: background 0.12s ease, box-shadow 0.12s ease;
 }
@@ -276,5 +280,19 @@
 
 @media (max-width: 600px) {
     .vault { padding: 0.75rem 1rem 1rem; gap: 0.6rem; }
-    .chat_switch__btn { padding: 0.4rem 0.8rem; }
+
+    /* Header wraps: name + back on top row, the switch pill centered below */
+    .chat_header { flex-wrap: wrap; row-gap: 0.6rem; }
+    .chat_header__info { order: 1; flex: 1 1 auto; }
+    .chat_header__back { order: 2; }
+    .chat_switch { order: 3; flex: 1 0 100%; justify-content: center; }
+    .chat_switch__btn { flex: 1; text-align: center; padding: 0.5rem 0.8rem; }
+
+    .vault__tool { width: 40px; height: 40px; }
+    .vault__crumb { font-size: 0.875rem; }
+
+    /* Comfortable touch targets and labels */
+    .vault_item { width: 84px; }
+    .vault_item__name { font-size: 0.7rem; }
+    .vault_menu button { padding: 0.65rem 0.75rem; font-size: 0.875rem; }
 }
