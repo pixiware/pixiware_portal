@@ -7,13 +7,15 @@
         <link rel="stylesheet" href="{{ url_for('static', filename='base_styles.css') }}">
     </head>
     <body class="auth-page">
-        
+
         <h1>Sign Up</h1>
-        <p class="auth-subtitle">Create your agency account</p>
-        <form action="/sign-up-api" method="post">
+        <p class="auth-subtitle">Join your {{ agency_name }} portal</p>
+        <form action="/invite/accept" method="post">
+            <input type="hidden" name="token" value="{{ token }}">
             <input type="text" name="email" placeholder="Email">
             <input type="password" name="password" placeholder="Password">
-            <input type="text" name="org_name" placeholder="Agency name">
+            <input type="text" name="name" placeholder="Your name">
+            <input type="text" value="{{ agency_name }}" placeholder="Agency" disabled>
             <button type="submit">Sign Up</button>
         </form>
         <a class="auth-footer" href="/sign-in">Already have an account? Sign in</a>

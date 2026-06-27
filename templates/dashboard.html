@@ -32,6 +32,15 @@
                             </a>
                         {% endfor %}
                     </div>
+                    {% if is_agency %}
+                    <div class="invite_box">
+                        <button type="button" id="invite-create" class="invite_box__btn">Create client invite link</button>
+                        <div id="invite-result" class="invite_box__result" hidden>
+                            <input type="text" id="invite-link" class="invite_box__link" readonly>
+                            <button type="button" id="invite-copy" class="invite_box__copy">Copy</button>
+                        </div>
+                    </div>
+                    {% endif %}
                 </div>
                 <div class="dashboard_main">
                     <a href="{{ url_for('settings') }}" class="dashboard_main__settings" aria-label="Settings">
@@ -90,5 +99,42 @@
             })();
         </script>
         <script src="{{ url_for('static', filename='notify.js') }}"></script>
+        <script>
+            (function () {
+                const createBtn = document.getElementById('invite-create');
+                if (!createBtn) return;
+                const result = document.getElementById('invite-result');
+                const linkInput = document.getElementById('invite-link');
+                const copyBtn = document.getElementById('invite-copy');
+
+                createBtn.addEventListener('click', async function () {
+                    createBtn.disabled = true;
+                    createBtn.textContent = 'Creating…';
+                    try {
+                        const res = await fetch('/invite/create', { method: 'POST' });
+                        const data = await res.json();
+                        if (!res.ok || !data.url) throw new Error(data.error || 'Could not create link');
+                        linkInput.value = data.url;
+                        result.hidden = false;
+                    } catch (err) {
+                        alert(err.message);
+                    } finally {
+                        createBtn.disabled = false;
+                        createBtn.textContent = 'Create another invite link';
+                    }
+                });
+
+                copyBtn.addEventListener('click', async function () {
+                    try {
+                        await navigator.clipboard.writeText(linkInput.value);
+                        copyBtn.textContent = 'Copied';
+                        setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1500);
+                    } catch (err) {
+                        linkInput.select();
+                        document.execCommand('copy');
+                    }
+                });
+            })();
+        </script>
     </body>
 </html>
