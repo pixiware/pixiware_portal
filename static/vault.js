@@ -12,10 +12,11 @@
     const uploadBtn = document.getElementById('vault-upload');
 
     let items = [];
-    let currentFolder = null; // null = root canvas
+    let currentFolder = null; // null = root
     let selectedId = null;
     let loaded = false;
     let openMenu = null;
+    let renaming = false;
 
     const byId = (id) => items.find((i) => i.id === id);
     const childrenOf = (pid) => items.filter((i) => i.parent_id === pid);
@@ -39,21 +40,25 @@
         return data;
     }
 
+    // ---- icons ----
     function folderIcon() {
-        return '<svg viewBox="0 0 48 40" fill="none" aria-hidden="true"><path d="M3 8a4 4 0 0 1 4-4h11l4 5h19a4 4 0 0 1 4 4v22a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4V8Z" fill="currentColor"/></svg>';
+        return '<svg viewBox="0 0 48 40" fill="none" aria-hidden="true">'
+            + '<path d="M2 9a4 4 0 0 1 4-4h11l4 5h19a4 4 0 0 1 4 4v20a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V9Z" fill="currentColor"/>'
+            + '<path d="M2 13h44v-1a4 4 0 0 0-4-4H21l-4-5H6a4 4 0 0 0-4 4v6Z" fill="#fff" opacity="0.18"/></svg>';
     }
-
     function fileIcon() {
-        return '<svg viewBox="0 0 40 48" fill="none" aria-hidden="true"><path d="M6 4a3 3 0 0 1 3-3h17l8 8v32a3 3 0 0 1-3 3H9a3 3 0 0 1-3-3V4Z" fill="currentColor"/><path d="M26 1v8h8" fill="rgba(0,0,0,0.18)"/></svg>';
+        return '<svg viewBox="0 0 40 48" fill="none" aria-hidden="true">'
+            + '<path d="M6 4a3 3 0 0 1 3-3h17l8 8v32a3 3 0 0 1-3 3H9a3 3 0 0 1-3-3V4Z" fill="currentColor"/>'
+            + '<path d="M26 1v6a2 2 0 0 0 2 2h6" fill="#000" opacity="0.18"/></svg>';
     }
-
-    function renderIcon(item) {
+    function icon(item) {
         if (item.kind === 'file' && item.mime && item.mime.indexOf('image/') === 0) {
             return `<img class="vault_item__thumb" src="${escapeHtml(item.url)}" alt="">`;
         }
         return item.kind === 'folder' ? folderIcon() : fileIcon();
     }
 
+    // ---- rendering ----
     function renderItem(item) {
         const el = document.createElement('div');
         el.className = 'vault_item vault_item--' + item.kind;
@@ -61,11 +66,18 @@
         el.dataset.id = item.id;
         el.style.left = item.x + 'px';
         el.style.top = item.y + 'px';
-        el.innerHTML =
-            `<div class="vault_item__icon">${renderIcon(item)}</div>` +
-            `<div class="vault_item__name">${escapeHtml(item.name)}</div>`;
+
+        const iconEl = document.createElement('div');
+        iconEl.className = 'vault_item__icon';
+        iconEl.innerHTML = icon(item);
+
+        const nameEl = document.createElement('div');
+        nameEl.className = 'vault_item__name';
+        nameEl.textContent = item.name;
+
+        el.append(iconEl, nameEl);
         canvas.appendChild(el);
-        attachInteractions(el, item);
+        attach(el, item, iconEl, nameEl);
     }
 
     function render() {
@@ -81,6 +93,7 @@
         btn.type = 'button';
         btn.className = 'vault__crumb';
         btn.textContent = label;
+        btn.dataset.folderId = folderId == null ? '' : folderId;
         btn.addEventListener('click', () => { currentFolder = folderId; selectedId = null; render(); });
         return btn;
     }
@@ -99,7 +112,7 @@
         path.forEach((it) => {
             const sep = document.createElement('span');
             sep.className = 'vault__crumb-sep';
-            sep.textContent = '/';
+            sep.textContent = '›';
             breadcrumb.appendChild(sep);
             breadcrumb.appendChild(crumb(it.name, it.id));
         });
@@ -122,6 +135,7 @@
         }
     }
 
+    // ---- mutations ----
     async function moveItem(item, payload) {
         const body = { x: payload.x != null ? payload.x : item.x, y: payload.y != null ? payload.y : item.y };
         if ('parent_id' in payload) body.parent_id = payload.parent_id;
@@ -131,155 +145,95 @@
         render();
         try {
             await api(`/chat/${chatId}/vault/item/${item.id}/move`, { method: 'POST', json: body });
-        } catch (err) {
-            load();
-        }
+        } catch (err) { load(); }
     }
 
-    function folderElUnder(ev, excludeId) {
-        const stack = document.elementsFromPoint(ev.clientX, ev.clientY);
-        for (const node of stack) {
-            const el = node.closest && node.closest('.vault_item--folder');
-            if (el && Number(el.dataset.id) !== excludeId) return el;
-        }
-        return null;
+    function moveOut(item) {
+        if (item.parent_id == null) return;
+        const grandparent = byId(item.parent_id);
+        const target = grandparent ? grandparent.parent_id : null;
+        moveItem(item, { parent_id: target, x: 40, y: 40 });
     }
 
-    function attachInteractions(el, item) {
-        el.addEventListener('dblclick', (e) => { e.preventDefault(); openItem(item); });
-        el.addEventListener('contextmenu', (e) => { e.preventDefault(); showMenu(e, item); });
+    function startRename(id) {
+        const el = canvas.querySelector(`.vault_item[data-id="${id}"]`);
+        const item = byId(id);
+        if (!el || !item) return;
+        const nameEl = el.querySelector('.vault_item__name');
+        if (!nameEl) return;
 
-        el.addEventListener('pointerdown', (e) => {
-            if (e.button !== 0) return;
-            e.preventDefault();
-            selectItem(item.id);
-            const startX = e.clientX, startY = e.clientY;
-            const origX = item.x, origY = item.y;
-            let moved = false;
-            let curX = origX, curY = origY;
-            el.setPointerCapture(e.pointerId);
+        renaming = true;
+        const input = document.createElement('input');
+        input.className = 'vault_item__rename';
+        input.value = item.name;
+        nameEl.replaceWith(input);
+        input.focus();
+        input.select();
 
-            function onMove(ev) {
-                const dx = ev.clientX - startX;
-                const dy = ev.clientY - startY;
-                if (!moved && Math.hypot(dx, dy) < 4) return;
-                if (!moved) {
-                    moved = true;
-                    el.classList.add('vault_item--dragging');
-                    el.style.pointerEvents = 'none';
-                }
-                curX = Math.max(0, origX + dx);
-                curY = Math.max(0, origY + dy);
-                el.style.left = curX + 'px';
-                el.style.top = curY + 'px';
-
-                canvas.querySelectorAll('.vault_item--drop-target').forEach((n) => n.classList.remove('vault_item--drop-target'));
-                const folderEl = folderElUnder(ev, item.id);
-                if (folderEl) folderEl.classList.add('vault_item--drop-target');
+        let settled = false;
+        const finish = async (save) => {
+            if (settled) return;
+            settled = true;
+            renaming = false;
+            const value = input.value.trim();
+            if (save && value && value !== item.name) {
+                item.name = value;
+                try {
+                    await api(`/chat/${chatId}/vault/item/${id}/rename`, { method: 'POST', json: { name: value } });
+                } catch (err) { load(); return; }
             }
+            render();
+        };
 
-            function onUp(ev) {
-                el.releasePointerCapture(e.pointerId);
-                el.removeEventListener('pointermove', onMove);
-                el.removeEventListener('pointerup', onUp);
-                el.classList.remove('vault_item--dragging');
-                el.style.pointerEvents = '';
-                canvas.querySelectorAll('.vault_item--drop-target').forEach((n) => n.classList.remove('vault_item--drop-target'));
-                if (!moved) return;
-                const folderEl = folderElUnder(ev, item.id);
-                if (folderEl) {
-                    moveItem(item, { parent_id: Number(folderEl.dataset.id), x: 40, y: 40 });
-                } else {
-                    moveItem(item, { x: curX, y: curY });
-                }
-            }
-
-            el.addEventListener('pointermove', onMove);
-            el.addEventListener('pointerup', onUp);
+        input.addEventListener('pointerdown', (e) => e.stopPropagation());
+        input.addEventListener('dblclick', (e) => e.stopPropagation());
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+            else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
         });
+        input.addEventListener('blur', () => finish(true));
     }
 
-    function closeMenu() {
-        if (openMenu) { openMenu.remove(); openMenu = null; }
-    }
-
-    function showMenu(e, item) {
-        closeMenu();
-        const menu = document.createElement('div');
-        menu.className = 'vault_menu';
-        menu.style.left = e.clientX + 'px';
-        menu.style.top = e.clientY + 'px';
-        menu.innerHTML =
-            '<button type="button" data-act="open">Open</button>' +
-            '<button type="button" data-act="rename">Rename</button>' +
-            '<button type="button" data-act="delete">Delete</button>';
-        document.body.appendChild(menu);
-        openMenu = menu;
-        menu.addEventListener('click', (ev) => {
-            const act = ev.target.dataset.act;
-            if (!act) return;
-            if (act === 'open') openItem(item);
-            if (act === 'rename') startRename(item.id);
-            if (act === 'delete') deleteItem(item);
-            closeMenu();
-        });
-        setTimeout(() => document.addEventListener('pointerdown', closeMenu, { once: true }), 0);
-    }
-
-    async function startRename(id) {
-        const it = byId(id);
-        if (!it) return;
-        const name = window.prompt('Rename', it.name);
-        if (name == null) return;
-        const trimmed = name.trim();
-        if (!trimmed) return;
-        it.name = trimmed;
-        render();
-        try {
-            await api(`/chat/${chatId}/vault/item/${id}/rename`, { method: 'POST', json: { name: trimmed } });
-        } catch (err) {
-            load();
-        }
-    }
-
-    async function deleteItem(item) {
-        const extra = item.kind === 'folder' ? ' and everything inside it' : '';
-        if (!window.confirm(`Delete "${item.name}"${extra}?`)) return;
-
-        const toRemove = new Set([item.id]);
+    function collectSubtree(id) {
+        const ids = new Set([id]);
         let changed = true;
         while (changed) {
             changed = false;
             items.forEach((i) => {
-                if (i.parent_id != null && toRemove.has(i.parent_id) && !toRemove.has(i.id)) {
-                    toRemove.add(i.id);
+                if (i.parent_id != null && ids.has(i.parent_id) && !ids.has(i.id)) {
+                    ids.add(i.id);
                     changed = true;
                 }
             });
         }
-        if (toRemove.has(currentFolder)) currentFolder = byId(currentFolder)?.parent_id ?? null;
-        items = items.filter((i) => !toRemove.has(i.id));
+        return ids;
+    }
+
+    async function deleteItem(item) {
+        const extra = item.kind === 'folder' ? ' and everything inside it' : '';
+        if (!window.confirm(`Delete "${item.name}"${extra}? This cannot be undone.`)) return;
+        const remove = collectSubtree(item.id);
+        if (remove.has(currentFolder)) currentFolder = byId(currentFolder)?.parent_id ?? null;
+        items = items.filter((i) => !remove.has(i.id));
+        if (remove.has(selectedId)) selectedId = null;
         render();
         try {
             await api(`/chat/${chatId}/vault/item/${item.id}/delete`, { method: 'POST' });
-        } catch (err) {
-            load();
-        }
+        } catch (err) { load(); }
     }
 
     async function createFolder() {
         try {
-            const offset = childrenOf(currentFolder).length * 12;
+            const offset = childrenOf(currentFolder).length * 10 % 120;
             const data = await api(`/chat/${chatId}/vault/folder`, {
                 method: 'POST',
                 json: { name: 'New folder', parent_id: currentFolder, x: 40 + offset, y: 40 + offset },
             });
             items.push(data.item);
             render();
+            selectItem(data.item.id);
             startRename(data.item.id);
-        } catch (err) {
-            window.alert(err.message);
-        }
+        } catch (err) { window.alert(err.message); }
     }
 
     async function uploadFiles(fileList, pos) {
@@ -295,11 +249,133 @@
             if (!res.ok) throw new Error(data.error || 'Upload failed');
             items.push(...(data.items || []));
             render();
-        } catch (err) {
-            window.alert(err.message);
-        }
+        } catch (err) { window.alert(err.message); }
     }
 
+    // ---- drag & drop targets (folders + breadcrumb crumbs) ----
+    function dropTargetUnder(ev, excludeId) {
+        const stack = document.elementsFromPoint(ev.clientX, ev.clientY);
+        for (const node of stack) {
+            if (!node.closest) continue;
+            const folder = node.closest('.vault_item--folder');
+            if (folder && Number(folder.dataset.id) !== excludeId) {
+                return { el: folder, parentId: Number(folder.dataset.id) };
+            }
+            const cr = node.closest('.vault__crumb');
+            if (cr) {
+                return { el: cr, parentId: cr.dataset.folderId ? Number(cr.dataset.folderId) : null };
+            }
+        }
+        return null;
+    }
+
+    function clearDropHighlight() {
+        canvas.querySelectorAll('.vault_item--drop-target').forEach((n) => n.classList.remove('vault_item--drop-target'));
+        breadcrumb.querySelectorAll('.vault__crumb--drop').forEach((n) => n.classList.remove('vault__crumb--drop'));
+    }
+
+    function attach(el, item, iconEl, nameEl) {
+        iconEl.addEventListener('dblclick', (e) => { e.preventDefault(); openItem(item); });
+        nameEl.addEventListener('dblclick', (e) => { e.preventDefault(); e.stopPropagation(); selectItem(item.id); startRename(item.id); });
+        el.addEventListener('contextmenu', (e) => { e.preventDefault(); e.stopPropagation(); selectItem(item.id); showItemMenu(e, item); });
+
+        el.addEventListener('pointerdown', (e) => {
+            if (e.button !== 0 || renaming) return;
+            e.preventDefault();
+            selectItem(item.id);
+            const startX = e.clientX, startY = e.clientY;
+            const origX = item.x, origY = item.y;
+            let moved = false, curX = origX, curY = origY;
+            el.setPointerCapture(e.pointerId);
+
+            function onMove(ev) {
+                const dx = ev.clientX - startX, dy = ev.clientY - startY;
+                if (!moved && Math.hypot(dx, dy) < 4) return;
+                if (!moved) {
+                    moved = true;
+                    el.classList.add('vault_item--dragging');
+                    el.style.pointerEvents = 'none';
+                }
+                curX = Math.max(0, origX + dx);
+                curY = Math.max(0, origY + dy);
+                el.style.left = curX + 'px';
+                el.style.top = curY + 'px';
+                clearDropHighlight();
+                const target = dropTargetUnder(ev, item.id);
+                if (target) target.el.classList.add(target.el.classList.contains('vault__crumb') ? 'vault__crumb--drop' : 'vault_item--drop-target');
+            }
+            function onUp(ev) {
+                el.releasePointerCapture(e.pointerId);
+                el.removeEventListener('pointermove', onMove);
+                el.removeEventListener('pointerup', onUp);
+                el.classList.remove('vault_item--dragging');
+                el.style.pointerEvents = '';
+                clearDropHighlight();
+                if (!moved) return;
+                const target = dropTargetUnder(ev, item.id);
+                if (target && target.parentId !== item.parent_id) {
+                    moveItem(item, { parent_id: target.parentId, x: 40, y: 40 });
+                } else if (!target) {
+                    moveItem(item, { x: curX, y: curY });
+                } else {
+                    render(); // dropped on its own current folder/crumb: snap back
+                }
+            }
+            el.addEventListener('pointermove', onMove);
+            el.addEventListener('pointerup', onUp);
+        });
+    }
+
+    // ---- context menus ----
+    function closeMenu() { if (openMenu) { openMenu.remove(); openMenu = null; } }
+
+    function buildMenu(entries, x, y) {
+        closeMenu();
+        const menu = document.createElement('div');
+        menu.className = 'vault_menu';
+        entries.forEach((entry) => {
+            if (entry === '-') {
+                const sep = document.createElement('div');
+                sep.className = 'vault_menu__sep';
+                menu.appendChild(sep);
+                return;
+            }
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.dataset.act = entry.act;
+            btn.textContent = entry.label;
+            btn.addEventListener('click', () => { closeMenu(); entry.run(); });
+            menu.appendChild(btn);
+        });
+        document.body.appendChild(menu);
+        // keep within viewport
+        const rect = menu.getBoundingClientRect();
+        menu.style.left = Math.min(x, window.innerWidth - rect.width - 8) + 'px';
+        menu.style.top = Math.min(y, window.innerHeight - rect.height - 8) + 'px';
+        openMenu = menu;
+        setTimeout(() => document.addEventListener('pointerdown', closeMenu, { once: true }), 0);
+    }
+
+    function showItemMenu(e, item) {
+        const entries = [
+            { act: 'open', label: item.kind === 'folder' ? 'Open' : 'Open / download', run: () => openItem(item) },
+            { act: 'rename', label: 'Rename', run: () => startRename(item.id) },
+        ];
+        if (item.parent_id != null) {
+            entries.push({ act: 'moveout', label: 'Move out of folder', run: () => moveOut(item) });
+        }
+        entries.push('-', { act: 'delete', label: item.kind === 'folder' ? 'Delete folder' : 'Delete file', run: () => deleteItem(item) });
+        buildMenu(entries, e.clientX, e.clientY);
+    }
+
+    function showCanvasMenu(e) {
+        buildMenu([
+            { act: 'newfolder', label: 'New folder', run: createFolder },
+            { act: 'upload', label: 'Upload files…', run: () => fileInput.click() },
+        ], e.clientX, e.clientY);
+    }
+
+    // ---- load ----
     async function load() {
         try {
             const data = await api(`/chat/${chatId}/vault`);
@@ -311,21 +387,25 @@
         }
     }
 
+    // ---- wiring ----
     newFolderBtn.addEventListener('click', createFolder);
     uploadBtn.addEventListener('click', () => fileInput.click());
-    fileInput.addEventListener('change', () => {
-        uploadFiles(fileInput.files, { x: 60, y: 60 });
-        fileInput.value = '';
-    });
+    fileInput.addEventListener('change', () => { uploadFiles(fileInput.files, { x: 56, y: 56 }); fileInput.value = ''; });
 
-    canvas.addEventListener('pointerdown', (e) => {
-        if (e.target === canvas) selectItem(null);
+    canvas.addEventListener('pointerdown', (e) => { if (e.target === canvas) selectItem(null); });
+    canvas.addEventListener('contextmenu', (e) => {
+        if (e.target === canvas || e.target === emptyEl || e.target.closest('.vault__empty')) {
+            e.preventDefault();
+            showCanvasMenu(e);
+        }
     });
-
     canvas.addEventListener('keydown', (e) => {
+        if (renaming) return;
         if ((e.key === 'Delete' || e.key === 'Backspace') && selectedId != null) {
             const it = byId(selectedId);
             if (it) deleteItem(it);
+        } else if (e.key === 'Enter' && selectedId != null) {
+            startRename(selectedId);
         }
     });
 
@@ -335,15 +415,13 @@
             dropzone.hidden = false;
         }
     });
-    canvas.addEventListener('dragleave', (e) => {
-        if (e.target === canvas || e.target === dropzone) dropzone.hidden = true;
-    });
+    canvas.addEventListener('dragleave', (e) => { if (e.target === canvas || e.target === dropzone) dropzone.hidden = true; });
     canvas.addEventListener('drop', (e) => {
         e.preventDefault();
         dropzone.hidden = true;
         if (!e.dataTransfer || !e.dataTransfer.files.length) return;
         const rect = canvas.getBoundingClientRect();
-        uploadFiles(e.dataTransfer.files, { x: e.clientX - rect.left, y: e.clientY - rect.top });
+        uploadFiles(e.dataTransfer.files, { x: e.clientX - rect.left + canvas.scrollLeft, y: e.clientY - rect.top + canvas.scrollTop });
     });
 
     window.PixiVault = {
