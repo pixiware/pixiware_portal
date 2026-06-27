@@ -6,6 +6,7 @@
         <title>Chat with {{ other_persons_name }}</title>
         <link rel="stylesheet" href="{{ url_for('static', filename='base_styles.css') }}">
         <link rel="stylesheet" href="{{ url_for('static', filename='chat.css') }}">
+        <link rel="stylesheet" href="{{ url_for('static', filename='vault.css') }}">
     </head>
     <body>
         <header class="chat_header">
@@ -20,6 +21,12 @@
             <a class="chat_header__back" href="{{ url_for('dashboard') }}">← Dashboard</a>
         </header>
 
+        <nav class="chat_primary_nav" aria-label="Sections">
+            <button type="button" class="chat_primary_nav__btn chat_primary_nav__btn--active" data-section="chat">Chat</button>
+            <button type="button" class="chat_primary_nav__btn" data-section="vault">PixiVault</button>
+        </nav>
+
+        <div class="chat_section" data-section-panel="chat">
         <nav class="chat_mobile_tabs" aria-label="Chat views">
             <button type="button" class="chat_mobile_tabs__btn chat_mobile_tabs__btn--active" data-view="chat">Messages</button>
             <button type="button" class="chat_mobile_tabs__btn" data-view="site">Your site</button>
@@ -109,6 +116,29 @@
                     {% else %}
                         <p class="site_preview__empty">You'll see your site here soon.</p>
                     {% endif %}
+                </div>
+            </div>
+        </div>
+
+        </div><!-- /chat_section[chat] -->
+
+        <div class="chat_section" data-section-panel="vault" hidden>
+            <div class="vault" id="vault" data-chat-id="{{ chat_id }}">
+                <div class="vault__toolbar">
+                    <nav class="vault__breadcrumb" id="vault-breadcrumb" aria-label="Folder path"></nav>
+                    <div class="vault__actions">
+                        <button type="button" class="vault__btn" id="vault-new-folder">New folder</button>
+                        <button type="button" class="vault__btn vault__btn--primary" id="vault-upload">Upload</button>
+                        <input type="file" id="vault-file-input" multiple hidden>
+                    </div>
+                </div>
+                <p class="vault__hint">Drag files in from your computer · drag an item onto a folder to file it · double-click a folder to open it</p>
+                <div class="vault__canvas" id="vault-canvas" tabindex="0">
+                    <div class="vault__empty" id="vault-empty" hidden>
+                        <p>Nothing here yet.</p>
+                        <p class="vault__empty-sub">Drop files anywhere on this canvas to add them.</p>
+                    </div>
+                    <div class="vault__dropzone" id="vault-dropzone" hidden>Drop to upload</div>
                 </div>
             </div>
         </div>
@@ -574,7 +604,26 @@
                 updateSiteLinks(currentSiteUrl);
                 monitorSitePreview();
             }
+
+            // Primary section switch: Chat <-> PixiVault
+            const sectionPanels = document.querySelectorAll('[data-section-panel]');
+            const sectionBtns = document.querySelectorAll('.chat_primary_nav__btn');
+            function setSection(section) {
+                sectionPanels.forEach((panel) => {
+                    panel.hidden = panel.dataset.sectionPanel !== section;
+                });
+                sectionBtns.forEach((btn) => {
+                    btn.classList.toggle('chat_primary_nav__btn--active', btn.dataset.section === section);
+                });
+                if (section === 'vault' && window.PixiVault) {
+                    window.PixiVault.activate();
+                }
+            }
+            sectionBtns.forEach((btn) => {
+                btn.addEventListener('click', () => setSection(btn.dataset.section));
+            });
         </script>
+        <script src="{{ url_for('static', filename='vault.js') }}"></script>
         <script src="{{ url_for('static', filename='notify.js') }}"></script>
     </body>
 </html>

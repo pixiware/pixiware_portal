@@ -15,7 +15,9 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 import stripe
 
 ATTACHMENTS_BUCKET = 'message_attatchments'
+VAULT_BUCKET = 'vault_documents'
 MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
+MAX_VAULT_BYTES = 25 * 1024 * 1024
 ALLOWED_ATTACHMENT_TYPES = {
     'image/jpeg',
     'image/png',
@@ -23,11 +25,16 @@ ALLOWED_ATTACHMENT_TYPES = {
     'image/webp',
     'application/pdf',
     'text/plain',
+    'text/csv',
+    'application/zip',
     'application/msword',
     'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation',
 }
 ALLOWED_ATTACHMENT_EXTENSIONS = {
-    '.jpg', '.jpeg', '.png', '.gif', '.webp', '.pdf', '.txt', '.doc', '.docx',
+    '.jpg', '.jpeg', '.png', '.gif', '.webp', '.pdf', '.txt', '.csv', '.zip',
+    '.doc', '.docx', '.xlsx', '.pptx',
 }
 EXTENSION_MIME_MAP = {
     '.jpg': 'image/jpeg',
@@ -37,8 +44,12 @@ EXTENSION_MIME_MAP = {
     '.webp': 'image/webp',
     '.pdf': 'application/pdf',
     '.txt': 'text/plain',
+    '.csv': 'text/csv',
+    '.zip': 'application/zip',
     '.doc': 'application/msword',
     '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
 }
 def _load_env_file():
     env_path = os.path.join(os.path.dirname(__file__), '.env')
@@ -290,6 +301,101 @@ def normalize_site_url(url):
     if not url.startswith(('http://', 'https://')):
         url = f'https://{url}'
     return url
+
+def get_vault_client_id(cursor, user_id, chat_id):
+    # A vault belongs to the client in the conversation. For an agency this is
+    # the chat partner (the client); for a client it is themselves.
+    role = get_user_role(cursor, user_id)
+    return get_preview_user_id(role, user_id, chat_id)
+
+def serialize_vault_item(row, chat_id):
+    item_id, parent_id, kind, name, pos_x, pos_y, mime, size_bytes = row
+    item = {
+        'id': item_id,
+        'parent_id': parent_id,
+        'kind': kind,
+        'name': name,
+        'x': pos_x,
+        'y': pos_y,
+    }
+    if kind == 'file':
+        item['mime'] = mime
+        item['size'] = size_bytes
+        item['url'] = url_for('vault_file', chat_id=chat_id, item_id=item_id)
+    return item
+
+def fetch_vault_items(cursor, client_id, chat_id):
+    cursor.execute(
+        '''
+        SELECT id, parent_id, kind, name, pos_x, pos_y, mime, size_bytes
+        FROM public.vault_items
+        WHERE client_id = %s
+        ORDER BY created_at ASC
+        ''',
+        (client_id,),
+    )
+    return [serialize_vault_item(row, chat_id) for row in cursor.fetchall()]
+
+def vault_parent_ok(cursor, parent_id, client_id):
+    if parent_id is None:
+        return True
+    cursor.execute(
+        "SELECT 1 FROM public.vault_items WHERE id = %s AND client_id = %s AND kind = 'folder'",
+        (parent_id, client_id),
+    )
+    return cursor.fetchone() is not None
+
+def upload_vault_object(file_storage, client_id):
+    supabase_url, service_key = get_supabase_config()
+    if not supabase_url or not service_key:
+        raise ValueError('file storage is not configured')
+
+    data = file_storage.read()
+    if not data:
+        raise ValueError('empty file')
+    if len(data) > MAX_VAULT_BYTES:
+        raise ValueError('file is too large (max 25MB)')
+
+    mime = resolve_attachment_mime(file_storage.filename, file_storage.mimetype)
+    safe_name = secure_filename(file_storage.filename) or 'file'
+    object_path = f'{client_id}/{uuid.uuid4().hex}_{safe_name}'
+    upload_url = f'{supabase_url}/storage/v1/object/{VAULT_BUCKET}/{object_path}'
+
+    req = Request(
+        upload_url,
+        data=data,
+        method='POST',
+        headers={
+            'Authorization': f'Bearer {service_key}',
+            'apikey': service_key,
+            'Content-Type': mime,
+            'x-upsert': 'false',
+        },
+    )
+    try:
+        with urlopen(req) as response:
+            response.read()
+    except HTTPError as exc:
+        detail = exc.read().decode('utf-8', errors='replace')
+        raise ValueError(f'upload failed: {detail or exc.reason}') from exc
+
+    return {'path': object_path, 'mime': mime, 'size': len(data)}
+
+def delete_vault_object(path):
+    supabase_url, service_key = get_supabase_config()
+    if not supabase_url or not service_key or not path:
+        return
+    delete_url = f'{supabase_url}/storage/v1/object/{VAULT_BUCKET}/{quote(path, safe="/")}'
+    req = Request(
+        delete_url,
+        method='DELETE',
+        headers={'Authorization': f'Bearer {service_key}', 'apikey': service_key},
+    )
+    try:
+        with urlopen(req) as response:
+            response.read()
+    except HTTPError:
+        pass
 
 def is_pro_user(value):
     return bool(value)
@@ -559,6 +665,7 @@ ADMIN_ACC_ID = 7
 _stripe_schema_ready = False
 _messages_schema_ready = False
 _agency_schema_ready = False
+_vault_schema_ready = False
 
 
 def external_url(endpoint, **values):
@@ -641,12 +748,61 @@ def ensure_agency_schema(conn):
     _agency_schema_ready = True
 
 
+def ensure_vault_schema(conn):
+    global _vault_schema_ready
+    if _vault_schema_ready:
+        return
+    with conn.cursor() as cursor:
+        cursor.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS public.vault_items (
+                id           bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+                client_id    bigint NOT NULL,
+                parent_id    bigint REFERENCES public.vault_items(id) ON DELETE CASCADE,
+                kind         text   NOT NULL CHECK (kind IN ('folder', 'file')),
+                name         text   NOT NULL,
+                pos_x        double precision NOT NULL DEFAULT 40,
+                pos_y        double precision NOT NULL DEFAULT 40,
+                storage_path text,
+                mime         text,
+                size_bytes   bigint,
+                uploaded_by  bigint,
+                created_at   timestamptz NOT NULL DEFAULT now(),
+                updated_at   timestamptz NOT NULL DEFAULT now()
+            )
+            '''
+        )
+        cursor.execute(
+            'CREATE INDEX IF NOT EXISTS idx_vault_items_client ON public.vault_items (client_id)'
+        )
+        cursor.execute(
+            'CREATE INDEX IF NOT EXISTS idx_vault_items_parent ON public.vault_items (parent_id)'
+        )
+        try:
+            cursor.execute('SAVEPOINT vault_bucket')
+            cursor.execute(
+                '''
+                INSERT INTO storage.buckets (id, name, public)
+                VALUES (%s, %s, false)
+                ON CONFLICT (id) DO NOTHING
+                ''',
+                (VAULT_BUCKET, VAULT_BUCKET),
+            )
+            cursor.execute('RELEASE SAVEPOINT vault_bucket')
+        except psycopg.Error:
+            # storage schema may not be writable from this role; the bucket can be
+            # created once in the Supabase dashboard instead.
+            cursor.execute('ROLLBACK TO SAVEPOINT vault_bucket')
+    _vault_schema_ready = True
+
+
 def get_db_connection():
     conn = psycopg.connect(DB_URL, prepare_threshold=None)
     try:
         ensure_stripe_schema(conn)
         ensure_messages_schema(conn)
         ensure_agency_schema(conn)
+        ensure_vault_schema(conn)
     except psycopg.Error as exc:
         conn.rollback()
         print(f'Could not ensure database schema: {exc}')
@@ -1098,6 +1254,259 @@ def save_site_url(chat_id):
             )
 
     return jsonify({'ok': True, 'site_url': site_url})
+
+def _vault_guard(cursor, chat_id):
+    """Return (user_id, client_id) if the session user may use this vault, else (None, error_response)."""
+    user_id = session.get('user_id')
+    if not user_id:
+        return None, (jsonify({'error': 'unauthorized'}), 401)
+    if not can_message(user_id, chat_id, cursor):
+        return None, (jsonify({'error': 'forbidden'}), 403)
+    return user_id, get_vault_client_id(cursor, user_id, chat_id)
+
+def _vault_coords(payload):
+    try:
+        x = float(payload.get('x', 40))
+        y = float(payload.get('y', 40))
+    except (TypeError, ValueError):
+        x, y = 40.0, 40.0
+    return x, y
+
+@app.route('/chat/<int:chat_id>/vault')
+def vault_list(chat_id):
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            user_id, client_id = _vault_guard(cursor, chat_id)
+            if user_id is None:
+                return client_id
+            items = fetch_vault_items(cursor, client_id, chat_id)
+    return jsonify({'items': items})
+
+@app.route('/chat/<int:chat_id>/vault/folder', methods=['POST'])
+def vault_create_folder(chat_id):
+    payload = request.json or {}
+    name = (payload.get('name') or 'New folder').strip()[:120] or 'New folder'
+    parent_id = payload.get('parent_id')
+    x, y = _vault_coords(payload)
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            user_id, client_id = _vault_guard(cursor, chat_id)
+            if user_id is None:
+                return client_id
+            if not vault_parent_ok(cursor, parent_id, client_id):
+                return jsonify({'error': 'invalid folder'}), 400
+
+            cursor.execute(
+                '''
+                INSERT INTO public.vault_items
+                    (client_id, parent_id, kind, name, pos_x, pos_y, uploaded_by)
+                VALUES (%s, %s, 'folder', %s, %s, %s, %s)
+                RETURNING id, parent_id, kind, name, pos_x, pos_y, mime, size_bytes
+                ''',
+                (client_id, parent_id, name, x, y, user_id),
+            )
+            item = serialize_vault_item(cursor.fetchone(), chat_id)
+    return jsonify({'item': item})
+
+@app.route('/chat/<int:chat_id>/vault/upload', methods=['POST'])
+def vault_upload(chat_id):
+    parent_raw = request.form.get('parent_id')
+    parent_id = int(parent_raw) if parent_raw and parent_raw.isdigit() else None
+    x, y = _vault_coords(request.form)
+    files = [f for f in request.files.getlist('files') if f and f.filename]
+    if not files:
+        return jsonify({'error': 'no files'}), 400
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            user_id, client_id = _vault_guard(cursor, chat_id)
+            if user_id is None:
+                return client_id
+            if not vault_parent_ok(cursor, parent_id, client_id):
+                return jsonify({'error': 'invalid folder'}), 400
+
+            created = []
+            for index, file_storage in enumerate(files):
+                try:
+                    stored = upload_vault_object(file_storage, client_id)
+                except ValueError as exc:
+                    return jsonify({'error': str(exc)}), 400
+
+                cursor.execute(
+                    '''
+                    INSERT INTO public.vault_items
+                        (client_id, parent_id, kind, name, pos_x, pos_y, storage_path, mime, size_bytes, uploaded_by)
+                    VALUES (%s, %s, 'file', %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id, parent_id, kind, name, pos_x, pos_y, mime, size_bytes
+                    ''',
+                    (
+                        client_id,
+                        parent_id,
+                        file_storage.filename[:200],
+                        x + index * 28,
+                        y + index * 28,
+                        stored['path'],
+                        stored['mime'],
+                        stored['size'],
+                        user_id,
+                    ),
+                )
+                created.append(serialize_vault_item(cursor.fetchone(), chat_id))
+    return jsonify({'items': created})
+
+@app.route('/chat/<int:chat_id>/vault/item/<int:item_id>/move', methods=['POST'])
+def vault_move(chat_id, item_id):
+    payload = request.json or {}
+    x, y = _vault_coords(payload)
+    has_parent = 'parent_id' in payload
+    parent_id = payload.get('parent_id')
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            user_id, client_id = _vault_guard(cursor, chat_id)
+            if user_id is None:
+                return client_id
+
+            cursor.execute(
+                'SELECT kind FROM public.vault_items WHERE id = %s AND client_id = %s',
+                (item_id, client_id),
+            )
+            if not cursor.fetchone():
+                return jsonify({'error': 'not found'}), 404
+
+            if has_parent:
+                if parent_id is not None and not str(parent_id).isdigit():
+                    return jsonify({'error': 'invalid folder'}), 400
+                parent_id = int(parent_id) if parent_id is not None else None
+                if parent_id == item_id:
+                    return jsonify({'error': 'cannot nest into itself'}), 400
+                if not vault_parent_ok(cursor, parent_id, client_id):
+                    return jsonify({'error': 'invalid folder'}), 400
+                # Prevent moving a folder into one of its own descendants.
+                if parent_id is not None:
+                    cursor.execute(
+                        '''
+                        WITH RECURSIVE descendants AS (
+                            SELECT id FROM public.vault_items WHERE id = %s
+                            UNION ALL
+                            SELECT v.id FROM public.vault_items v
+                            JOIN descendants d ON v.parent_id = d.id
+                        )
+                        SELECT 1 FROM descendants WHERE id = %s
+                        ''',
+                        (item_id, parent_id),
+                    )
+                    if cursor.fetchone():
+                        return jsonify({'error': 'cannot nest into a subfolder'}), 400
+
+                cursor.execute(
+                    'UPDATE public.vault_items SET parent_id = %s, pos_x = %s, pos_y = %s, updated_at = now() WHERE id = %s AND client_id = %s',
+                    (parent_id, x, y, item_id, client_id),
+                )
+            else:
+                cursor.execute(
+                    'UPDATE public.vault_items SET pos_x = %s, pos_y = %s, updated_at = now() WHERE id = %s AND client_id = %s',
+                    (x, y, item_id, client_id),
+                )
+    return jsonify({'ok': True})
+
+@app.route('/chat/<int:chat_id>/vault/item/<int:item_id>/rename', methods=['POST'])
+def vault_rename(chat_id, item_id):
+    name = ((request.json or {}).get('name') or '').strip()[:200]
+    if not name:
+        return jsonify({'error': 'empty name'}), 400
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            user_id, client_id = _vault_guard(cursor, chat_id)
+            if user_id is None:
+                return client_id
+            cursor.execute(
+                'UPDATE public.vault_items SET name = %s, updated_at = now() WHERE id = %s AND client_id = %s',
+                (name, item_id, client_id),
+            )
+            if not cursor.rowcount:
+                return jsonify({'error': 'not found'}), 404
+    return jsonify({'ok': True, 'name': name})
+
+@app.route('/chat/<int:chat_id>/vault/item/<int:item_id>/delete', methods=['POST'])
+def vault_delete(chat_id, item_id):
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            user_id, client_id = _vault_guard(cursor, chat_id)
+            if user_id is None:
+                return client_id
+
+            # Collect storage paths of this item and every descendant file first.
+            cursor.execute(
+                '''
+                WITH RECURSIVE tree AS (
+                    SELECT id, storage_path, kind FROM public.vault_items
+                    WHERE id = %s AND client_id = %s
+                    UNION ALL
+                    SELECT v.id, v.storage_path, v.kind FROM public.vault_items v
+                    JOIN tree t ON v.parent_id = t.id
+                )
+                SELECT storage_path FROM tree WHERE kind = 'file' AND storage_path IS NOT NULL
+                ''',
+                (item_id, client_id),
+            )
+            paths = [r[0] for r in cursor.fetchall()]
+
+            cursor.execute(
+                'DELETE FROM public.vault_items WHERE id = %s AND client_id = %s',
+                (item_id, client_id),
+            )
+            if not cursor.rowcount:
+                return jsonify({'error': 'not found'}), 404
+
+    for path in paths:
+        delete_vault_object(path)
+    return jsonify({'ok': True})
+
+@app.route('/chat/<int:chat_id>/vault/item/<int:item_id>/file')
+def vault_file(chat_id, item_id):
+    user_id = session.get('user_id')
+    if not user_id:
+        return attachment_error_response('Sign in to view this file.', 401)
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            if not can_message(user_id, chat_id, cursor):
+                return attachment_error_response('You do not have access to this file.', 403)
+            client_id = get_vault_client_id(cursor, user_id, chat_id)
+            cursor.execute(
+                "SELECT storage_path, mime, name FROM public.vault_items "
+                "WHERE id = %s AND client_id = %s AND kind = 'file'",
+                (item_id, client_id),
+            )
+            row = cursor.fetchone()
+
+    if not row or not row[0]:
+        return attachment_error_response('File not found.', 404)
+
+    storage_path, mime, name = row
+    supabase_url, service_key = get_supabase_config()
+    if not supabase_url or not service_key:
+        return attachment_error_response('File storage is not configured.', 503)
+
+    download_url = f'{supabase_url}/storage/v1/object/{VAULT_BUCKET}/{quote(storage_path, safe="/")}'
+    req = Request(
+        download_url,
+        headers={'Authorization': f'Bearer {service_key}', 'apikey': service_key},
+    )
+    try:
+        with urlopen(req) as response:
+            data = response.read()
+            resolved_mime = response.headers.get('Content-Type', mime or 'application/octet-stream')
+    except HTTPError:
+        return attachment_error_response('File not found.', 404)
+
+    return Response(
+        data,
+        mimetype=resolved_mime,
+        headers={'Content-Disposition': f'inline; filename="{name}"'},
+    )
 
 @app.route('/notifications/poll')
 def notifications_poll():
