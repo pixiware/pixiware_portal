@@ -7,6 +7,7 @@
         <link rel="stylesheet" href="{{ url_for('static', filename='base_styles.css') }}">
         <link rel="stylesheet" href="{{ url_for('static', filename='chat.css') }}">
         <link rel="stylesheet" href="{{ url_for('static', filename='vault.css') }}">
+        <link rel="stylesheet" href="{{ url_for('static', filename='forms.css') }}">
     </head>
     <body>
         <header class="chat_header">
@@ -35,6 +36,9 @@
             <div class="chat_panel">
                 <div id="messages" class="messages">
                     {% for conversation in conversation_list %}
+                        {% if conversation.form %}
+                        <div class="conversation_item conversation_item--form {% if conversation.sender == 'you' %}conversation_item--you{% endif %}" data-message-id="{{ conversation.id }}" data-form="{{ conversation.form | tojson | forceescape }}"></div>
+                        {% else %}
                         <div class="conversation_item {% if conversation.sender == 'you' %}conversation_item--you{% endif %}" data-message-id="{{ conversation.id }}">
                             <div class="conversation_item_sender">{{ conversation.sender }}</div>
                             <div class="conversation_item_body">
@@ -58,6 +62,7 @@
                                 {% endif %}
                             </div>
                         </div>
+                        {% endif %}
                     {% else %}
                         <p class="messages_empty">No messages yet.</p>
                     {% endfor %}
@@ -68,6 +73,11 @@
                     <div class="message_form__composer">
                         <div id="attachment-preview" class="attachment_preview" hidden></div>
                         <div class="message_form__row">
+                            {% if admin %}
+                            <button type="button" class="message_form__form" id="message-form-btn" aria-label="Attach a form" title="Attach a form">
+                                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z" stroke="currentColor" stroke-width="1.6"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.6"/><path d="M12 11v6M9 14h6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+                            </button>
+                            {% endif %}
                             <button type="button" class="message_form__attach" id="message-attach" aria-label="Attach file">
                                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                                     <path stroke="currentColor" stroke-width="1.5" stroke-linecap="round" d="M8.5 12.5 14.7 6.3a3.5 3.5 0 1 1 5 5l-7.8 7.8a5 5 0 0 1-7.1-7.1l8.5-8.5"/>
@@ -153,10 +163,23 @@
             <div class="site_fullscreen__frame" id="site_fullscreen_frame"></div>
         </div>
 
+        {% if admin %}
+        <div class="fp" id="form-picker" hidden>
+            <div class="fp__panel">
+                <p class="fp__title">Send a form</p>
+                <p class="fp__sub">Pick one of your forms to send to this client.</p>
+                <div class="fp__list" id="form-picker-list"></div>
+                <button type="button" class="fb__btn" id="form-picker-close" style="margin-top:0.9rem;width:100%">Close</button>
+            </div>
+        </div>
+        {% endif %}
+
         <script>
             const chatId = {{ chat_id }};
             const userId = {{ user_id }};
             const isAdmin = {{ 'true' if admin else 'false' }};
+            window.CHAT_ID = chatId;
+            window.IS_AGENCY = isAdmin;
             const messagesEl = document.getElementById('messages');
             const form = document.getElementById('message-form');
             const input = document.getElementById('message-input');
@@ -212,6 +235,11 @@
             }
 
             function buildMessageElement(message, isNew) {
+                if (message.form && window.PixiForms) {
+                    const formItem = window.PixiForms.chatCard(message);
+                    if (isNew) formItem.classList.add('conversation_item--new');
+                    return formItem;
+                }
                 const item = document.createElement('div');
                 item.className = 'conversation_item' + (message.sender === 'you' ? ' conversation_item--you' : '');
                 if (isNew) {
@@ -626,8 +654,11 @@
             sectionBtns.forEach((btn) => {
                 btn.addEventListener('click', () => setSection(btn.dataset.section));
             });
+
+            window.__chatReload = () => loadMessages(true);
         </script>
         <script src="{{ url_for('static', filename='vault.js') }}"></script>
+        <script src="{{ url_for('static', filename='forms.js') }}"></script>
         <script src="{{ url_for('static', filename='notify.js') }}"></script>
     </body>
 </html>

@@ -207,7 +207,7 @@ def fetch_conversation(cursor, user_id, chat_id):
     other_name = row[0]
     cursor.execute(
         '''
-        SELECT id, sender_id, body, COALESCE(attachments, '[]'::jsonb)
+        SELECT id, sender_id, body, COALESCE(attachments, '[]'::jsonb), form_item_id
         FROM public.messages
         WHERE (sender_id = %s AND receiver_id = %s)
            OR (sender_id = %s AND receiver_id = %s)
@@ -215,15 +215,20 @@ def fetch_conversation(cursor, user_id, chat_id):
         ''',
         (user_id, chat_id, chat_id, user_id),
     )
-    messages = [
-        {
+    rows = cursor.fetchall()
+    messages = []
+    for msg_id, sender_id, body, attachments, form_item_id in rows:
+        message = {
             'id': msg_id,
             'sender': 'you' if sender_id == user_id else other_name,
             'body': body or '',
             'attachments': enrich_attachments(attachments, chat_id),
         }
-        for msg_id, sender_id, body, attachments in cursor.fetchall()
-    ]
+        if form_item_id:
+            card = get_form_card(cursor, msg_id, form_item_id)
+            if card:
+                message['form'] = card
+        messages.append(message)
     return other_name, messages
 
 def upsert_user_presence(cursor, user_id):
@@ -396,6 +401,79 @@ def delete_vault_object(path):
             response.read()
     except HTTPError:
         pass
+
+def ensure_vault_folder(cursor, client_id, name, uploaded_by):
+    # Find a root-level folder by name in the client's vault, creating it if missing.
+    name = (name or '').strip()
+    if not name:
+        return None
+    cursor.execute(
+        "SELECT id FROM public.vault_items "
+        "WHERE client_id = %s AND parent_id IS NULL AND kind = 'folder' AND lower(name) = lower(%s) "
+        'LIMIT 1',
+        (client_id, name),
+    )
+    row = cursor.fetchone()
+    if row:
+        return row[0]
+    cursor.execute(
+        "INSERT INTO public.vault_items (client_id, parent_id, kind, name, pos_x, pos_y, uploaded_by) "
+        "VALUES (%s, NULL, 'folder', %s, 40, 40, %s) RETURNING id",
+        (client_id, name, uploaded_by),
+    )
+    return cursor.fetchone()[0]
+
+def normalize_form_schema(raw):
+    if not isinstance(raw, dict):
+        return {'fields': []}
+    fields = raw.get('fields')
+    if not isinstance(fields, list):
+        fields = []
+    clean = []
+    for idx, field in enumerate(fields):
+        if not isinstance(field, dict):
+            continue
+        ftype = field.get('type')
+        if ftype not in ('text', 'textarea', 'file'):
+            continue
+        entry = {
+            'id': str(field.get('id') or f'f{idx}')[:40],
+            'type': ftype,
+            'label': (str(field.get('label') or '').strip()[:200]) or 'Untitled',
+            'required': bool(field.get('required')),
+        }
+        if ftype in ('text', 'textarea'):
+            entry['placeholder'] = str(field.get('placeholder') or '').strip()[:200]
+        if ftype == 'file':
+            entry['folder'] = str(field.get('folder') or '').strip()[:120]
+        clean.append(entry)
+    return {'fields': clean[:50]}
+
+def get_form_card(cursor, message_id, form_item_id):
+    cursor.execute('SELECT name, schema FROM public.form_items WHERE id = %s', (form_item_id,))
+    row = cursor.fetchone()
+    if not row:
+        return None
+    name, schema = row
+    fields = schema.get('fields', []) if isinstance(schema, dict) else []
+    cursor.execute('SELECT 1 FROM public.form_submissions WHERE message_id = %s LIMIT 1', (message_id,))
+    submitted = cursor.fetchone() is not None
+    return {'form_item_id': form_item_id, 'name': name, 'fields': fields, 'submitted': submitted}
+
+def serialize_form_item(row):
+    item_id, parent_id, kind, name, pos_x, pos_y, field_count = row
+    item = {'id': item_id, 'parent_id': parent_id, 'kind': kind, 'name': name, 'x': pos_x, 'y': pos_y}
+    if kind == 'form':
+        item['fields'] = field_count
+    return item
+
+def forms_agency_guard(cursor):
+    user_id = session.get('user_id')
+    if not user_id:
+        return None, (jsonify({'error': 'unauthorized'}), 401)
+    if not is_agency_role(get_user_role(cursor, user_id)):
+        return None, (jsonify({'error': 'forbidden'}), 403)
+    return user_id, None
 
 def is_pro_user(value):
     return bool(value)
@@ -666,6 +744,7 @@ _stripe_schema_ready = False
 _messages_schema_ready = False
 _agency_schema_ready = False
 _vault_schema_ready = False
+_forms_schema_ready = False
 
 
 def external_url(endpoint, **values):
@@ -796,6 +875,48 @@ def ensure_vault_schema(conn):
     _vault_schema_ready = True
 
 
+def ensure_forms_schema(conn):
+    global _forms_schema_ready
+    if _forms_schema_ready:
+        return
+    with conn.cursor() as cursor:
+        cursor.execute('ALTER TABLE public.messages ADD COLUMN IF NOT EXISTS form_item_id bigint')
+        cursor.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS public.form_items (
+                id         bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+                agency_id  bigint NOT NULL,
+                parent_id  bigint REFERENCES public.form_items(id) ON DELETE CASCADE,
+                kind       text   NOT NULL CHECK (kind IN ('folder', 'form')),
+                name       text   NOT NULL,
+                pos_x      double precision NOT NULL DEFAULT 40,
+                pos_y      double precision NOT NULL DEFAULT 40,
+                schema     jsonb,
+                created_at timestamptz NOT NULL DEFAULT now(),
+                updated_at timestamptz NOT NULL DEFAULT now()
+            )
+            '''
+        )
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_form_items_agency ON public.form_items (agency_id)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_form_items_parent ON public.form_items (parent_id)')
+        cursor.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS public.form_submissions (
+                id           bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+                form_item_id bigint,
+                message_id   bigint,
+                agency_id    bigint,
+                client_id    bigint,
+                submitted_by bigint,
+                answers      jsonb,
+                created_at   timestamptz NOT NULL DEFAULT now()
+            )
+            '''
+        )
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_form_submissions_message ON public.form_submissions (message_id)')
+    _forms_schema_ready = True
+
+
 def get_db_connection():
     conn = psycopg.connect(DB_URL, prepare_threshold=None)
     try:
@@ -803,6 +924,7 @@ def get_db_connection():
         ensure_messages_schema(conn)
         ensure_agency_schema(conn)
         ensure_vault_schema(conn)
+        ensure_forms_schema(conn)
     except psycopg.Error as exc:
         conn.rollback()
         print(f'Could not ensure database schema: {exc}')
@@ -1507,6 +1629,313 @@ def vault_file(chat_id, item_id):
         mimetype=resolved_mime,
         headers={'Content-Disposition': f'inline; filename="{name}"'},
     )
+
+# ---- Form builder (agency dashboard) ----
+
+@app.route('/forms')
+def forms_page():
+    user_id = session.get('user_id')
+    if not user_id:
+        return redirect(url_for('sign_in'))
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            if not is_agency_role(get_user_role(cursor, user_id)):
+                return redirect(url_for('dashboard'))
+    return render_template('forms.html')
+
+@app.route('/forms/list')
+def forms_list():
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            agency_id, err = forms_agency_guard(cursor)
+            if agency_id is None:
+                return err
+            cursor.execute(
+                '''
+                SELECT id, parent_id, kind, name, pos_x, pos_y,
+                       COALESCE(jsonb_array_length(schema->'fields'), 0)
+                FROM public.form_items WHERE agency_id = %s ORDER BY created_at ASC
+                ''',
+                (agency_id,),
+            )
+            items = [serialize_form_item(r) for r in cursor.fetchall()]
+    return jsonify({'items': items})
+
+@app.route('/forms/folder', methods=['POST'])
+def forms_folder():
+    payload = request.json or {}
+    name = (payload.get('name') or 'New folder').strip()[:120] or 'New folder'
+    parent_id = payload.get('parent_id')
+    x, y = _vault_coords(payload)
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            agency_id, err = forms_agency_guard(cursor)
+            if agency_id is None:
+                return err
+            if parent_id is not None:
+                cursor.execute("SELECT 1 FROM public.form_items WHERE id=%s AND agency_id=%s AND kind='folder'", (parent_id, agency_id))
+                if not cursor.fetchone():
+                    return jsonify({'error': 'invalid folder'}), 400
+            cursor.execute(
+                "INSERT INTO public.form_items (agency_id, parent_id, kind, name, pos_x, pos_y) "
+                "VALUES (%s, %s, 'folder', %s, %s, %s) "
+                "RETURNING id, parent_id, kind, name, pos_x, pos_y, 0",
+                (agency_id, parent_id, name, x, y),
+            )
+            item = serialize_form_item(cursor.fetchone())
+    return jsonify({'item': item})
+
+@app.route('/forms/save', methods=['POST'])
+def forms_save():
+    payload = request.json or {}
+    name = (payload.get('name') or 'Untitled form').strip()[:200] or 'Untitled form'
+    schema = normalize_form_schema(payload.get('schema'))
+    item_id = payload.get('id')
+    parent_id = payload.get('parent_id')
+    x, y = _vault_coords(payload)
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            agency_id, err = forms_agency_guard(cursor)
+            if agency_id is None:
+                return err
+            if item_id:
+                cursor.execute(
+                    "UPDATE public.form_items SET name=%s, schema=%s, updated_at=now() "
+                    "WHERE id=%s AND agency_id=%s AND kind='form' "
+                    "RETURNING id, parent_id, kind, name, pos_x, pos_y, COALESCE(jsonb_array_length(schema->'fields'),0)",
+                    (name, json.dumps(schema), item_id, agency_id),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return jsonify({'error': 'not found'}), 404
+            else:
+                if parent_id is not None:
+                    cursor.execute("SELECT 1 FROM public.form_items WHERE id=%s AND agency_id=%s AND kind='folder'", (parent_id, agency_id))
+                    if not cursor.fetchone():
+                        parent_id = None
+                cursor.execute(
+                    "INSERT INTO public.form_items (agency_id, parent_id, kind, name, pos_x, pos_y, schema) "
+                    "VALUES (%s, %s, 'form', %s, %s, %s, %s) "
+                    "RETURNING id, parent_id, kind, name, pos_x, pos_y, COALESCE(jsonb_array_length(schema->'fields'),0)",
+                    (agency_id, parent_id, name, x, y, json.dumps(schema)),
+                )
+                row = cursor.fetchone()
+            item = serialize_form_item(row)
+    return jsonify({'item': item})
+
+@app.route('/forms/item/<int:item_id>')
+def forms_get(item_id):
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            agency_id, err = forms_agency_guard(cursor)
+            if agency_id is None:
+                return err
+            cursor.execute(
+                "SELECT id, name, COALESCE(schema, '{}'::jsonb) FROM public.form_items "
+                "WHERE id=%s AND agency_id=%s AND kind='form'",
+                (item_id, agency_id),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return jsonify({'error': 'not found'}), 404
+    return jsonify({'id': row[0], 'name': row[1], 'schema': row[2]})
+
+@app.route('/forms/item/<int:item_id>/move', methods=['POST'])
+def forms_move(item_id):
+    payload = request.json or {}
+    x, y = _vault_coords(payload)
+    has_parent = 'parent_id' in payload
+    parent_id = payload.get('parent_id')
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            agency_id, err = forms_agency_guard(cursor)
+            if agency_id is None:
+                return err
+            cursor.execute('SELECT 1 FROM public.form_items WHERE id=%s AND agency_id=%s', (item_id, agency_id))
+            if not cursor.fetchone():
+                return jsonify({'error': 'not found'}), 404
+            if has_parent:
+                if parent_id is not None:
+                    if not str(parent_id).isdigit():
+                        return jsonify({'error': 'invalid folder'}), 400
+                    parent_id = int(parent_id)
+                    if parent_id == item_id:
+                        return jsonify({'error': 'cannot nest into itself'}), 400
+                    cursor.execute("SELECT 1 FROM public.form_items WHERE id=%s AND agency_id=%s AND kind='folder'", (parent_id, agency_id))
+                    if not cursor.fetchone():
+                        return jsonify({'error': 'invalid folder'}), 400
+                    cursor.execute(
+                        '''
+                        WITH RECURSIVE descendants AS (
+                            SELECT id FROM public.form_items WHERE id = %s
+                            UNION ALL
+                            SELECT f.id FROM public.form_items f JOIN descendants d ON f.parent_id = d.id
+                        )
+                        SELECT 1 FROM descendants WHERE id = %s
+                        ''',
+                        (item_id, parent_id),
+                    )
+                    if cursor.fetchone():
+                        return jsonify({'error': 'cannot nest into a subfolder'}), 400
+                cursor.execute('UPDATE public.form_items SET parent_id=%s, pos_x=%s, pos_y=%s, updated_at=now() WHERE id=%s AND agency_id=%s', (parent_id, x, y, item_id, agency_id))
+            else:
+                cursor.execute('UPDATE public.form_items SET pos_x=%s, pos_y=%s, updated_at=now() WHERE id=%s AND agency_id=%s', (x, y, item_id, agency_id))
+    return jsonify({'ok': True})
+
+@app.route('/forms/item/<int:item_id>/rename', methods=['POST'])
+def forms_rename(item_id):
+    name = ((request.json or {}).get('name') or '').strip()[:200]
+    if not name:
+        return jsonify({'error': 'empty name'}), 400
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            agency_id, err = forms_agency_guard(cursor)
+            if agency_id is None:
+                return err
+            cursor.execute('UPDATE public.form_items SET name=%s, updated_at=now() WHERE id=%s AND agency_id=%s', (name, item_id, agency_id))
+            if not cursor.rowcount:
+                return jsonify({'error': 'not found'}), 404
+    return jsonify({'ok': True, 'name': name})
+
+@app.route('/forms/item/<int:item_id>/delete', methods=['POST'])
+def forms_delete(item_id):
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            agency_id, err = forms_agency_guard(cursor)
+            if agency_id is None:
+                return err
+            cursor.execute('DELETE FROM public.form_items WHERE id=%s AND agency_id=%s', (item_id, agency_id))
+            if not cursor.rowcount:
+                return jsonify({'error': 'not found'}), 404
+    return jsonify({'ok': True})
+
+# ---- Forms in chat (send + submit) ----
+
+@app.route('/chat/<int:chat_id>/forms')
+def chat_forms_list(chat_id):
+    user_id = session.get('user_id')
+    if not user_id:
+        return jsonify({'error': 'unauthorized'}), 401
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            if not can_message(user_id, chat_id, cursor):
+                return jsonify({'error': 'forbidden'}), 403
+            if not is_agency_role(get_user_role(cursor, user_id)):
+                return jsonify({'error': 'forbidden'}), 403
+            cursor.execute(
+                "SELECT id, name, COALESCE(jsonb_array_length(schema->'fields'),0) "
+                "FROM public.form_items WHERE agency_id=%s AND kind='form' ORDER BY name ASC",
+                (user_id,),
+            )
+            forms = [{'id': r[0], 'name': r[1], 'fields': r[2]} for r in cursor.fetchall()]
+    return jsonify({'forms': forms})
+
+@app.route('/chat/<int:chat_id>/form/send', methods=['POST'])
+def chat_form_send(chat_id):
+    form_item_id = (request.json or {}).get('form_item_id')
+    if not form_item_id:
+        return jsonify({'error': 'missing form'}), 400
+    user_id = session.get('user_id')
+    if not user_id:
+        return jsonify({'error': 'unauthorized'}), 401
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            if not can_message(user_id, chat_id, cursor):
+                return jsonify({'error': 'forbidden'}), 403
+            if not is_agency_role(get_user_role(cursor, user_id)):
+                return jsonify({'error': 'forbidden'}), 403
+            cursor.execute("SELECT name FROM public.form_items WHERE id=%s AND agency_id=%s AND kind='form'", (form_item_id, user_id))
+            row = cursor.fetchone()
+            if not row:
+                return jsonify({'error': 'form not found'}), 404
+            cursor.execute(
+                'INSERT INTO public.messages (sender_id, receiver_id, created_at, body, form_item_id) '
+                'VALUES (%s, %s, %s, %s, %s) RETURNING id',
+                (user_id, chat_id, datetime.now(timezone.utc), f'Form: {row[0]}', form_item_id),
+            )
+            message_id = cursor.fetchone()[0]
+    return jsonify({'ok': True, 'id': message_id})
+
+@app.route('/chat/<int:chat_id>/form/<int:message_id>/submit', methods=['POST'])
+def chat_form_submit(chat_id, message_id):
+    user_id = session.get('user_id')
+    if not user_id:
+        return jsonify({'error': 'unauthorized'}), 401
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            if not can_message(user_id, chat_id, cursor):
+                return jsonify({'error': 'forbidden'}), 403
+
+            cursor.execute('SELECT sender_id, receiver_id, form_item_id FROM public.messages WHERE id=%s', (message_id,))
+            mrow = cursor.fetchone()
+            if not mrow or not mrow[2]:
+                return jsonify({'error': 'not a form'}), 404
+            sender_id, receiver_id, form_item_id = mrow
+            if user_id not in (sender_id, receiver_id):
+                return jsonify({'error': 'forbidden'}), 403
+
+            cursor.execute('SELECT 1 FROM public.form_submissions WHERE message_id=%s', (message_id,))
+            if cursor.fetchone():
+                return jsonify({'error': 'already submitted'}), 409
+
+            cursor.execute("SELECT agency_id, name, COALESCE(schema, '{}'::jsonb) FROM public.form_items WHERE id=%s", (form_item_id,))
+            frow = cursor.fetchone()
+            if not frow:
+                return jsonify({'error': 'form unavailable'}), 404
+            agency_id, form_name, schema = frow
+            fields = schema.get('fields', []) if isinstance(schema, dict) else []
+            client_id = receiver_id if receiver_id != agency_id else sender_id
+
+            answers = []
+            for field in fields:
+                fid, ftype, label = field['id'], field['type'], field['label']
+                if ftype == 'file':
+                    files = [f for f in request.files.getlist(fid) if f and f.filename]
+                    if field.get('required') and not files:
+                        return jsonify({'error': f'{label} is required'}), 400
+                    folder = field.get('folder') or ''
+                    folder_id = ensure_vault_folder(cursor, client_id, folder, user_id) if folder else None
+                    saved = []
+                    for fs in files:
+                        try:
+                            stored = upload_vault_object(fs, client_id)
+                        except ValueError as exc:
+                            return jsonify({'error': str(exc)}), 400
+                        cursor.execute(
+                            "INSERT INTO public.vault_items (client_id, parent_id, kind, name, pos_x, pos_y, storage_path, mime, size_bytes, uploaded_by) "
+                            "VALUES (%s, %s, 'file', %s, 40, 40, %s, %s, %s, %s)",
+                            (client_id, folder_id, fs.filename[:200], stored['path'], stored['mime'], stored['size'], user_id),
+                        )
+                        saved.append(fs.filename)
+                    answers.append({'label': label, 'type': 'file', 'files': saved, 'folder': folder})
+                else:
+                    value = (request.form.get(fid) or '').strip()
+                    if field.get('required') and not value:
+                        return jsonify({'error': f'{label} is required'}), 400
+                    answers.append({'label': label, 'type': ftype, 'value': value})
+
+            cursor.execute(
+                'INSERT INTO public.form_submissions (form_item_id, message_id, agency_id, client_id, submitted_by, answers) '
+                'VALUES (%s, %s, %s, %s, %s, %s)',
+                (form_item_id, message_id, agency_id, client_id, user_id, json.dumps(answers)),
+            )
+
+            lines = [f'Submitted "{form_name}"']
+            for answer in answers:
+                if answer['type'] == 'file':
+                    if answer.get('files'):
+                        dest = f" → {answer['folder']}" if answer.get('folder') else ' → PixiVault'
+                        lines.append(f"{answer['label']}: {', '.join(answer['files'])}{dest}")
+                    else:
+                        lines.append(f"{answer['label']}: (no file)")
+                else:
+                    lines.append(f"{answer['label']}: {answer['value'] or '—'}")
+            other = receiver_id if user_id == sender_id else sender_id
+            cursor.execute(
+                'INSERT INTO public.messages (sender_id, receiver_id, created_at, body) VALUES (%s, %s, %s, %s)',
+                (user_id, other, datetime.now(timezone.utc), '\n'.join(lines)),
+            )
+    return jsonify({'ok': True})
 
 @app.route('/notifications/poll')
 def notifications_poll():

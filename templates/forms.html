@@ -1,0 +1,70 @@
+<html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+        <meta name="theme-color" content="#10b981">
+        <title>Form Builder</title>
+        <link rel="stylesheet" href="{{ url_for('static', filename='base_styles.css') }}">
+        <link rel="stylesheet" href="{{ url_for('static', filename='chat.css') }}">
+        <link rel="stylesheet" href="{{ url_for('static', filename='vault.css') }}">
+        <link rel="stylesheet" href="{{ url_for('static', filename='forms.css') }}">
+    </head>
+    <body>
+        <header class="chat_header">
+            <div class="chat_header__info">
+                <span class="chat_header__label">Agency</span>
+                <h1><span class="chat_header__name">Form Builder</span></h1>
+            </div>
+            <a class="chat_header__back" href="{{ url_for('dashboard') }}">← Dashboard</a>
+        </header>
+
+        <div class="chat_section">
+            <div class="vault" id="forms">
+                <div class="vault__bar">
+                    <nav class="vault__breadcrumb" id="forms-breadcrumb" aria-label="Folder path"></nav>
+                    <div class="vault__tools">
+                        <button type="button" class="vault__tool" id="forms-new-folder" title="New folder" aria-label="New folder">
+                            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2.5h6a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z" stroke="currentColor" stroke-width="1.6"/><path d="M12 11.5v4M10 13.5h4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+                        </button>
+                        <button type="button" class="vault__tool" id="forms-new" title="New form" aria-label="New form">
+                            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z" stroke="currentColor" stroke-width="1.6"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.6"/><path d="M12 11v6M9 14h6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+                        </button>
+                    </div>
+                </div>
+                <div class="vault__canvas" id="forms-canvas" tabindex="0">
+                    <div class="vault__empty" id="forms-empty" hidden>
+                        <p>No forms yet</p>
+                        <p class="vault__empty-sub">Click the new-form button, or right-click the canvas</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Builder overlay -->
+        <div class="fb" id="fb" hidden>
+            <div class="fb__panel">
+                <div class="fb__head">
+                    <input class="fb__title" id="fb-title" placeholder="Untitled form" autocomplete="off">
+                    <div class="fb__head-actions">
+                        <button type="button" class="fb__btn" id="fb-cancel">Cancel</button>
+                        <button type="button" class="fb__btn fb__btn--primary" id="fb-save">Save form</button>
+                    </div>
+                </div>
+                <div class="fb__body">
+                    <div class="fb__editor">
+                        <div class="fb__fields" id="fb-fields"></div>
+                        <div class="fb__add">
+                            <button type="button" data-type="text">+ Short text</button>
+                            <button type="button" data-type="textarea">+ Paragraph</button>
+                            <button type="button" data-type="file">+ File upload</button>
+                        </div>
+                    </div>
+                    <div class="fb__preview" id="fb-preview"></div>
+                </div>
+            </div>
+        </div>
+
+        <script src="{{ url_for('static', filename='forms.js') }}"></script>
+        <script src="{{ url_for('static', filename='formbuilder.js') }}"></script>
+    </body>
+</html>
