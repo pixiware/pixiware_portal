@@ -22,6 +22,7 @@
             <div class="chat_switch" role="tablist" aria-label="Sections">
                 <button type="button" class="chat_switch__btn chat_switch__btn--active" data-section="chat" role="tab" aria-selected="true">Chat</button>
                 <button type="button" class="chat_switch__btn" data-section="vault" role="tab" aria-selected="false">PixiVault</button>
+                {% if admin %}<button type="button" class="chat_switch__btn" data-section="progress" role="tab" aria-selected="false">Progress</button>{% endif %}
             </div>
             <a class="chat_header__back" href="{{ url_for('dashboard') }}">← Dashboard</a>
         </header>
@@ -34,6 +35,16 @@
 
         <div class="chat_workspace chat_workspace--mobile-chat" id="chat-workspace">
             <div class="chat_panel">
+                <div class="proj_banner" id="proj-banner" hidden>
+                    <div class="proj_banner__top">
+                        <span class="proj_banner__label">Project progress</span>
+                        <span class="proj_banner__meta">
+                            <span class="proj_banner__pct" id="proj-pct">0%</span>
+                            <span class="proj_banner__date" id="proj-date" hidden></span>
+                        </span>
+                    </div>
+                    <div class="proj_banner__track"><div class="proj_banner__fill" id="proj-fill"></div></div>
+                </div>
                 <div id="messages" class="messages">
                     {% for conversation in conversation_list %}
                         {% if conversation.form %}
@@ -155,6 +166,30 @@
             </div>
         </div>
 
+        {% if admin %}
+        <div class="chat_section" data-section-panel="progress" hidden>
+            <div class="progress_editor">
+                <h2 class="progress_editor__title">Project progress</h2>
+                <p class="progress_editor__hint">Set the progress and delivery date — your client sees this at the top of the chat.</p>
+
+                <div class="progress_editor__field">
+                    <label class="progress_editor__label">Progress <output id="prog-out">{{ progress }}%</output></label>
+                    <input type="range" id="prog-range" min="0" max="100" step="5" value="{{ progress }}">
+                </div>
+
+                <div class="progress_editor__field">
+                    <label class="progress_editor__label" for="prog-date-input">Delivery date</label>
+                    <input type="date" id="prog-date-input" value="{{ delivery_date or '' }}">
+                </div>
+
+                <div class="progress_editor__actions">
+                    <button type="button" class="fb__btn fb__btn--primary" id="prog-save">Save</button>
+                    <span class="progress_editor__saved" id="prog-saved" hidden>Saved ✓</span>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+
         <div class="site_fullscreen" id="site_fullscreen" hidden aria-hidden="true">
             <div class="site_fullscreen__bar">
                 <p class="site_fullscreen__title">Your site</p>
@@ -180,6 +215,7 @@
             const isAdmin = {{ 'true' if admin else 'false' }};
             window.CHAT_ID = chatId;
             window.IS_AGENCY = isAdmin;
+            window.PROJECT = { progress: {{ progress }}, delivery_date: {{ delivery_date|tojson }} };
             const messagesEl = document.getElementById('messages');
             const form = document.getElementById('message-form');
             const input = document.getElementById('message-input');
@@ -318,7 +354,21 @@
                     return;
                 }
                 const data = await response.json();
+                syncForms(data.messages);
                 renderMessages(data.messages, forceScroll);
+            }
+
+            function syncForms(messages) {
+                if (!window.PixiForms) return;
+                messages.forEach((message) => {
+                    if (!message.form) return;
+                    const el = messagesEl.querySelector('.conversation_item--form[data-message-id="' + message.id + '"]');
+                    if (!el) return;
+                    const domSubmitted = !!el.querySelector('.form_card--submitted');
+                    if (message.form.submitted && !domSubmitted) {
+                        el.replaceWith(window.PixiForms.chatCard(message));
+                    }
+                });
             }
 
             function renderPresence({ online, typing }) {
@@ -656,6 +706,69 @@
             });
 
             window.__chatReload = () => loadMessages(true);
+
+            // ---- Project progress ----
+            const projBanner = document.getElementById('proj-banner');
+            function formatDate(iso) {
+                if (!iso) return '';
+                const d = new Date(iso + 'T00:00:00');
+                if (isNaN(d.getTime())) return iso;
+                return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+            }
+            function renderProgress() {
+                const p = window.PROJECT || { progress: 0, delivery_date: null };
+                const show = isAdmin || (p.progress && p.progress > 0) || p.delivery_date;
+                projBanner.hidden = !show;
+                if (!show) return;
+                const pct = Math.max(0, Math.min(100, p.progress || 0));
+                document.getElementById('proj-pct').textContent = pct + '%';
+                document.getElementById('proj-fill').style.width = pct + '%';
+                const dateEl = document.getElementById('proj-date');
+                if (p.delivery_date) { dateEl.hidden = false; dateEl.textContent = 'Delivery: ' + formatDate(p.delivery_date); }
+                else { dateEl.hidden = true; }
+            }
+            renderProgress();
+
+            function syncProgressEditor() {
+                const range = document.getElementById('prog-range');
+                if (!range) return;
+                const dateInput = document.getElementById('prog-date-input');
+                if (document.activeElement === range || document.activeElement === dateInput) return;
+                range.value = window.PROJECT.progress || 0;
+                document.getElementById('prog-out').textContent = (window.PROJECT.progress || 0) + '%';
+                dateInput.value = window.PROJECT.delivery_date || '';
+            }
+
+            async function loadProgress() {
+                try {
+                    const res = await fetch(`/chat/${chatId}/progress`);
+                    if (!res.ok) return;
+                    window.PROJECT = await res.json();
+                    renderProgress();
+                    syncProgressEditor();
+                } catch (e) {}
+            }
+
+            const progRange = document.getElementById('prog-range');
+            if (progRange) {
+                const progOut = document.getElementById('prog-out');
+                progRange.addEventListener('input', () => { progOut.textContent = progRange.value + '%'; });
+                document.getElementById('prog-save').addEventListener('click', async () => {
+                    const saved = document.getElementById('prog-saved');
+                    const body = { progress: Number(progRange.value), delivery_date: document.getElementById('prog-date-input').value };
+                    try {
+                        const res = await fetch(`/chat/${chatId}/progress`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.error || 'Could not save');
+                        window.PROJECT = data;
+                        renderProgress();
+                        saved.hidden = false;
+                        setTimeout(() => { saved.hidden = true; }, 1600);
+                    } catch (e) { alert(e.message); }
+                });
+            }
+
+            setInterval(() => { if (!document.hidden) loadProgress(); }, 12000);
         </script>
         <script src="{{ url_for('static', filename='vault.js') }}"></script>
         <script src="{{ url_for('static', filename='forms.js') }}"></script>

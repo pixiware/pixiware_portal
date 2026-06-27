@@ -18,6 +18,24 @@
                     {% if pro_user %}<span class="pro_badge">Pro</span>{% endif %}
                 </p>
             </div>
+            {% if is_agency %}
+            <div class="agency_actions">
+                <a class="agency_btn" href="{{ url_for('forms_page') }}">
+                    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z" stroke="currentColor" stroke-width="1.6"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.6"/><path d="M12 11v6M9 14h6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+                    Form Builder
+                </a>
+                <div class="agency_invite">
+                    <button type="button" class="agency_btn agency_btn--primary" id="invite-create">
+                        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M16 11a4 4 0 1 0-8 0M4 20a8 8 0 0 1 12-2M19 8v6M22 11h-6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                        Invite client
+                    </button>
+                    <div id="invite-result" class="agency_invite__result" hidden>
+                        <input type="text" id="invite-link" readonly>
+                        <button type="button" id="invite-copy">Copy</button>
+                    </div>
+                </div>
+            </div>
+            {% endif %}
         </header>
 
         <div class="chat_container">
@@ -33,21 +51,6 @@
                             </a>
                         {% endfor %}
                     </div>
-                    {% if is_agency %}
-                    <nav class="dash_nav">
-                        <a class="dash_nav__link" href="{{ url_for('forms_page') }}">
-                            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z" stroke="currentColor" stroke-width="1.6"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.6"/><path d="M12 11v6M9 14h6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
-                            Form Builder
-                        </a>
-                    </nav>
-                    <div class="invite_box">
-                        <button type="button" id="invite-create" class="invite_box__btn">Create client invite link</button>
-                        <div id="invite-result" class="invite_box__result" hidden>
-                            <input type="text" id="invite-link" class="invite_box__link" readonly>
-                            <button type="button" id="invite-copy" class="invite_box__copy">Copy</button>
-                        </div>
-                    </div>
-                    {% endif %}
                 </div>
                 <div class="dashboard_main">
                     <a href="{{ url_for('settings') }}" class="dashboard_main__settings" aria-label="Settings">

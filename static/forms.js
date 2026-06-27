@@ -50,6 +50,24 @@ window.PixiForms = (function () {
         return wrap;
     }
 
+    function answerNode(a) {
+        const wrap = document.createElement('div');
+        wrap.className = 'form_field';
+        const label = document.createElement('div');
+        label.className = 'form_field__label';
+        label.textContent = a.label;
+        wrap.appendChild(label);
+        const val = document.createElement('div');
+        val.className = 'form_answer';
+        if (a.type === 'file') {
+            val.textContent = (a.files && a.files.length) ? (a.files.join(', ') + (a.folder ? ' → ' + a.folder : '')) : '—';
+        } else {
+            val.textContent = a.value || '—';
+        }
+        wrap.appendChild(val);
+        return wrap;
+    }
+
     // mode: 'fill' (client can submit), 'sent' (read-only), 'preview' (builder)
     function buildFormCard(form, opts) {
         opts = opts || {};
@@ -68,7 +86,10 @@ window.PixiForms = (function () {
         const body = document.createElement('div');
         body.className = 'form_card__body';
         const fields = form.fields || [];
-        if (!fields.length) {
+        if (submitted && form.answers) {
+            if (!form.answers.length) body.innerHTML = '<p class="form_card__empty">No answers.</p>';
+            form.answers.forEach((a) => body.appendChild(answerNode(a)));
+        } else if (!fields.length) {
             body.innerHTML = '<p class="form_card__empty">This form has no fields yet.</p>';
         } else {
             fields.forEach((f) => body.appendChild(fieldNode(f, fillable)));
@@ -122,8 +143,7 @@ window.PixiForms = (function () {
             const res = await fetch('/chat/' + opts.chatId + '/form/' + opts.messageId + '/submit', { method: 'POST', body: fd });
             const data = await res.json().catch(() => ({}));
             if (!res.ok) throw new Error(data.error || 'Could not submit');
-            form.submitted = true;
-            card.replaceWith(buildFormCard(form, { mode: 'sent' }));
+            btn.textContent = 'Submitted';
             if (window.__chatReload) window.__chatReload();
         } catch (e) {
             err.textContent = e.message;

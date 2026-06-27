@@ -307,6 +307,14 @@ def normalize_site_url(url):
         url = f'https://{url}'
     return url
 
+def get_client_progress(cursor, role, user_id, chat_id):
+    client_id = get_preview_user_id(role, user_id, chat_id)
+    cursor.execute('SELECT COALESCE(progress, 0), delivery_date FROM public.users WHERE id = %s', (client_id,))
+    row = cursor.fetchone()
+    if not row:
+        return 0, None
+    return (row[0] or 0), (row[1].isoformat() if row[1] else None)
+
 def get_vault_client_id(cursor, user_id, chat_id):
     # A vault belongs to the client in the conversation. For an agency this is
     # the chat partner (the client); for a client it is themselves.
@@ -456,9 +464,12 @@ def get_form_card(cursor, message_id, form_item_id):
         return None
     name, schema = row
     fields = schema.get('fields', []) if isinstance(schema, dict) else []
-    cursor.execute('SELECT 1 FROM public.form_submissions WHERE message_id = %s LIMIT 1', (message_id,))
-    submitted = cursor.fetchone() is not None
-    return {'form_item_id': form_item_id, 'name': name, 'fields': fields, 'submitted': submitted}
+    cursor.execute('SELECT answers FROM public.form_submissions WHERE message_id = %s LIMIT 1', (message_id,))
+    sub = cursor.fetchone()
+    card = {'form_item_id': form_item_id, 'name': name, 'fields': fields, 'submitted': sub is not None}
+    if sub is not None:
+        card['answers'] = sub[0] if isinstance(sub[0], list) else []
+    return card
 
 def serialize_form_item(row):
     item_id, parent_id, kind, name, pos_x, pos_y, field_count = row
@@ -798,6 +809,8 @@ def ensure_agency_schema(conn):
     with conn.cursor() as cursor:
         cursor.execute('ALTER TABLE public.users ADD COLUMN IF NOT EXISTS role text')
         cursor.execute('ALTER TABLE public.users ADD COLUMN IF NOT EXISTS agency_id bigint')
+        cursor.execute('ALTER TABLE public.users ADD COLUMN IF NOT EXISTS progress integer')
+        cursor.execute('ALTER TABLE public.users ADD COLUMN IF NOT EXISTS delivery_date date')
         # One-time backfill of existing accounts. The original admin (ADMIN_ACC_ID)
         # becomes an agency; everyone else becomes a client of that agency. Only rows
         # whose role is still NULL are touched, so this is safe to run on every boot.
@@ -1192,6 +1205,7 @@ def chat(chat_id):
             role = get_user_role(cursor, user_id)
             site_url = get_site_url(cursor, role, user_id, chat_id)
             other_pro_user = get_user_pro_status(cursor, chat_id)
+            progress, delivery_date = get_client_progress(cursor, role, user_id, chat_id)
 
     is_admin = is_agency_role(role)
     return render_template(
@@ -1203,6 +1217,8 @@ def chat(chat_id):
         site_url=site_url,
         admin=is_admin,
         user_id=user_id,
+        progress=progress,
+        delivery_date=delivery_date,
     )
 
 @app.route('/chat/<int:chat_id>/messages')
@@ -1376,6 +1392,46 @@ def save_site_url(chat_id):
             )
 
     return jsonify({'ok': True, 'site_url': site_url})
+
+@app.route('/chat/<int:chat_id>/progress', methods=['GET', 'POST'])
+def chat_progress(chat_id):
+    user_id = session.get('user_id')
+    if not user_id:
+        return jsonify({'error': 'unauthorized'}), 401
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            if not can_message(user_id, chat_id, cursor):
+                return jsonify({'error': 'forbidden'}), 403
+            role = get_user_role(cursor, user_id)
+
+            if request.method == 'POST':
+                if not is_agency_role(role):
+                    return jsonify({'error': 'forbidden'}), 403
+                client_id = get_preview_user_id(role, user_id, chat_id)
+                payload = request.json or {}
+
+                if 'progress' in payload:
+                    try:
+                        progress = max(0, min(100, int(payload.get('progress'))))
+                    except (TypeError, ValueError):
+                        return jsonify({'error': 'invalid progress'}), 400
+                    cursor.execute('UPDATE public.users SET progress = %s WHERE id = %s', (progress, client_id))
+
+                if 'delivery_date' in payload:
+                    raw = (payload.get('delivery_date') or '').strip()
+                    if raw:
+                        try:
+                            parsed = datetime.strptime(raw, '%Y-%m-%d').date()
+                        except ValueError:
+                            return jsonify({'error': 'invalid date'}), 400
+                        cursor.execute('UPDATE public.users SET delivery_date = %s WHERE id = %s', (parsed, client_id))
+                    else:
+                        cursor.execute('UPDATE public.users SET delivery_date = NULL WHERE id = %s', (client_id,))
+
+            progress, delivery_date = get_client_progress(cursor, role, user_id, chat_id)
+
+    return jsonify({'progress': progress, 'delivery_date': delivery_date})
 
 def _vault_guard(cursor, chat_id):
     """Return (user_id, client_id) if the session user may use this vault, else (None, error_response)."""
@@ -1918,22 +1974,6 @@ def chat_form_submit(chat_id, message_id):
                 'INSERT INTO public.form_submissions (form_item_id, message_id, agency_id, client_id, submitted_by, answers) '
                 'VALUES (%s, %s, %s, %s, %s, %s)',
                 (form_item_id, message_id, agency_id, client_id, user_id, json.dumps(answers)),
-            )
-
-            lines = [f'Submitted "{form_name}"']
-            for answer in answers:
-                if answer['type'] == 'file':
-                    if answer.get('files'):
-                        dest = f" → {answer['folder']}" if answer.get('folder') else ' → PixiVault'
-                        lines.append(f"{answer['label']}: {', '.join(answer['files'])}{dest}")
-                    else:
-                        lines.append(f"{answer['label']}: (no file)")
-                else:
-                    lines.append(f"{answer['label']}: {answer['value'] or '—'}")
-            other = receiver_id if user_id == sender_id else sender_id
-            cursor.execute(
-                'INSERT INTO public.messages (sender_id, receiver_id, created_at, body) VALUES (%s, %s, %s, %s)',
-                (user_id, other, datetime.now(timezone.utc), '\n'.join(lines)),
             )
     return jsonify({'ok': True})
 
