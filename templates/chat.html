@@ -45,6 +45,13 @@
                     </div>
                     <div class="proj_banner__track"><div class="proj_banner__fill" id="proj-fill"></div></div>
                 </div>
+                <div class="todo" id="chat-todo" hidden>
+                    <div class="todo__head">
+                        <span class="todo__title">To-do</span>
+                        <span class="todo__count" id="todo-count"></span>
+                    </div>
+                    <ul class="todo__list" id="todo-list"></ul>
+                </div>
                 <div id="messages" class="messages">
                     {% for conversation in conversation_list %}
                         {% if conversation.form %}
@@ -355,7 +362,95 @@
                 }
                 const data = await response.json();
                 syncForms(data.messages);
+                renderTodos(data.messages);
                 renderMessages(data.messages, forceScroll);
+            }
+
+            const todoCard = document.getElementById('chat-todo');
+            const todoList = document.getElementById('todo-list');
+            const todoCount = document.getElementById('todo-count');
+            let todoDragEl = null;
+            let lastTodoSig = '';
+
+            function renderTodos(messages) {
+                if (todoDragEl) return; // don't rebuild mid-drag
+                const pending = messages
+                    .map((m, idx) => ({ m: m, idx: idx }))
+                    .filter((x) => x.m.form && !x.m.form.submitted);
+
+                pending.sort((a, b) => {
+                    const ao = a.m.todo_order, bo = b.m.todo_order;
+                    const an = (ao === null || ao === undefined), bn = (bo === null || bo === undefined);
+                    if (an && bn) return a.idx - b.idx;       // both unset → oldest first
+                    if (an) return 1;                         // unset sorts after explicit
+                    if (bn) return -1;
+                    if (ao !== bo) return ao - bo;
+                    return a.idx - b.idx;
+                });
+
+                const sig = pending.map((x) => x.m.id).join(',');
+                if (sig === lastTodoSig) return;
+                lastTodoSig = sig;
+
+                if (!pending.length) { todoCard.hidden = true; todoList.innerHTML = ''; return; }
+                todoCard.hidden = false;
+                todoCount.textContent = pending.length + ' form' + (pending.length === 1 ? '' : 's') + ' to fill';
+                todoList.innerHTML = '';
+                pending.forEach(({ m }) => {
+                    const li = document.createElement('li');
+                    li.className = 'todo__item';
+                    li.dataset.messageId = m.id;
+                    if (isAdmin) li.setAttribute('draggable', 'true');
+                    li.innerHTML =
+                        (isAdmin ? '<span class="todo__grip" aria-hidden="true">⠿</span>' : '') +
+                        '<span class="todo__name"></span>' +
+                        (isAdmin ? '<span class="todo__status">Awaiting</span>' : '<span class="todo__action">Fill in →</span>');
+                    li.querySelector('.todo__name').textContent = m.form.name;
+                    li.addEventListener('click', (e) => { if (e.target.closest('.todo__grip')) return; jumpToForm(m.id); });
+                    todoList.appendChild(li);
+                });
+                if (isAdmin) wireTodoDrag();
+            }
+
+            function jumpToForm(messageId) {
+                setSection('chat');
+                const el = messagesEl.querySelector('.conversation_item--form[data-message-id="' + messageId + '"]');
+                if (!el) return;
+                el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                const card = el.querySelector('.form_card') || el;
+                card.classList.add('form_card--flash');
+                setTimeout(() => card.classList.remove('form_card--flash'), 1200);
+            }
+
+            function wireTodoDrag() {
+                todoList.querySelectorAll('.todo__item').forEach((li) => {
+                    li.addEventListener('dragstart', () => { todoDragEl = li; li.classList.add('todo__item--dragging'); });
+                    li.addEventListener('dragend', () => { li.classList.remove('todo__item--dragging'); todoDragEl = null; lastTodoSig = ''; saveTodoOrder(); });
+                    li.addEventListener('dragover', (e) => {
+                        e.preventDefault();
+                        const after = todoAfterElement(e.clientY);
+                        if (after == null) todoList.appendChild(todoDragEl);
+                        else todoList.insertBefore(todoDragEl, after);
+                    });
+                });
+            }
+            function todoAfterElement(y) {
+                const els = [...todoList.querySelectorAll('.todo__item:not(.todo__item--dragging)')];
+                let closest = { offset: -Infinity, element: null };
+                els.forEach((child) => {
+                    const box = child.getBoundingClientRect();
+                    const offset = y - box.top - box.height / 2;
+                    if (offset < 0 && offset > closest.offset) closest = { offset: offset, element: child };
+                });
+                return closest.element;
+            }
+            async function saveTodoOrder() {
+                const order = [...todoList.querySelectorAll('.todo__item')].map((li) => li.dataset.messageId);
+                try {
+                    await fetch(`/chat/${chatId}/todos/reorder`, {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ order: order }),
+                    });
+                } catch (e) {}
             }
 
             function syncForms(messages) {
@@ -630,6 +725,7 @@
                 renderAttachmentPreview();
             });
 
+            loadMessages(false);
             setInterval(() => {
                 if (!document.hidden) {
                     loadMessages(false);

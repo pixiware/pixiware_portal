@@ -162,3 +162,25 @@
     .agency_invite { flex: 1; }
     .agency_invite__result { width: 100%; }
 }
+
+/* Chat to-do list (pending forms) */
+.todo { flex-shrink: 0; padding: 0.8rem 1.25rem; background: var(--color-surface); border-bottom: 1px solid var(--color-border); }
+.todo[hidden] { display: none; }
+.todo__head { display: flex; align-items: baseline; gap: 0.5rem; margin-bottom: 0.55rem; }
+.todo__title { font-size: 0.625rem; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--color-text-muted); }
+.todo__count { font-size: 0.75rem; color: var(--color-text-muted); }
+.todo__list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.4rem; }
+.todo__item { display: flex; align-items: center; gap: 0.6rem; padding: 0.55rem 0.7rem; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-bg-subtle); cursor: pointer; transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease; }
+.todo__item:hover { border-color: var(--color-emerald); background: var(--color-surface); }
+.todo__item--dragging { opacity: 0.55; border-style: dashed; }
+.todo__grip { color: var(--color-text-muted); cursor: grab; font-size: 0.95rem; line-height: 1; }
+.todo__grip:active { cursor: grabbing; }
+.todo__name { flex: 1; min-width: 0; font-weight: 600; font-size: 0.85rem; color: var(--color-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.todo__action { font-size: 0.75rem; font-weight: 700; color: #fff; background: var(--gradient-signature); padding: 0.32rem 0.7rem; border-radius: 999px; white-space: nowrap; }
+.todo__status { font-size: 0.72rem; font-weight: 600; color: var(--color-text-muted); white-space: nowrap; }
+
+.form_card--flash { animation: form-flash 1.2s ease; }
+@keyframes form-flash {
+    0% { box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.55); }
+    100% { box-shadow: 0 0 0 3px rgba(16, 185, 129, 0); }
+}

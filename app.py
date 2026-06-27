@@ -207,7 +207,7 @@ def fetch_conversation(cursor, user_id, chat_id):
     other_name = row[0]
     cursor.execute(
         '''
-        SELECT id, sender_id, body, COALESCE(attachments, '[]'::jsonb), form_item_id
+        SELECT id, sender_id, body, COALESCE(attachments, '[]'::jsonb), form_item_id, todo_order
         FROM public.messages
         WHERE (sender_id = %s AND receiver_id = %s)
            OR (sender_id = %s AND receiver_id = %s)
@@ -217,7 +217,7 @@ def fetch_conversation(cursor, user_id, chat_id):
     )
     rows = cursor.fetchall()
     messages = []
-    for msg_id, sender_id, body, attachments, form_item_id in rows:
+    for msg_id, sender_id, body, attachments, form_item_id, todo_order in rows:
         message = {
             'id': msg_id,
             'sender': 'you' if sender_id == user_id else other_name,
@@ -228,6 +228,7 @@ def fetch_conversation(cursor, user_id, chat_id):
             card = get_form_card(cursor, msg_id, form_item_id)
             if card:
                 message['form'] = card
+                message['todo_order'] = todo_order
         messages.append(message)
     return other_name, messages
 
@@ -894,6 +895,7 @@ def ensure_forms_schema(conn):
         return
     with conn.cursor() as cursor:
         cursor.execute('ALTER TABLE public.messages ADD COLUMN IF NOT EXISTS form_item_id bigint')
+        cursor.execute('ALTER TABLE public.messages ADD COLUMN IF NOT EXISTS todo_order integer')
         cursor.execute(
             '''
             CREATE TABLE IF NOT EXISTS public.form_items (
@@ -1432,6 +1434,33 @@ def chat_progress(chat_id):
             progress, delivery_date = get_client_progress(cursor, role, user_id, chat_id)
 
     return jsonify({'progress': progress, 'delivery_date': delivery_date})
+
+@app.route('/chat/<int:chat_id>/todos/reorder', methods=['POST'])
+def chat_todos_reorder(chat_id):
+    user_id = session.get('user_id')
+    if not user_id:
+        return jsonify({'error': 'unauthorized'}), 401
+    order = (request.json or {}).get('order')
+    if not isinstance(order, list):
+        return jsonify({'error': 'invalid order'}), 400
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            if not can_message(user_id, chat_id, cursor):
+                return jsonify({'error': 'forbidden'}), 403
+            if not is_agency_role(get_user_role(cursor, user_id)):
+                return jsonify({'error': 'forbidden'}), 403
+            for index, message_id in enumerate(order):
+                if not str(message_id).isdigit():
+                    continue
+                cursor.execute(
+                    '''
+                    UPDATE public.messages SET todo_order = %s
+                    WHERE id = %s AND form_item_id IS NOT NULL
+                      AND ((sender_id=%s AND receiver_id=%s) OR (sender_id=%s AND receiver_id=%s))
+                    ''',
+                    (index, int(message_id), user_id, chat_id, chat_id, user_id),
+                )
+    return jsonify({'ok': True})
 
 def _vault_guard(cursor, chat_id):
     """Return (user_id, client_id) if the session user may use this vault, else (None, error_response)."""
