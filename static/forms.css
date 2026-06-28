@@ -184,3 +184,31 @@
     0% { box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.55); }
     100% { box-shadow: 0 0 0 3px rgba(16, 185, 129, 0); }
 }
+
+/* Clean single tab bar for the chat */
+.chat_tabs { display: flex; gap: 0.1rem; padding: 0 max(1rem, env(safe-area-inset-left)); background: var(--color-surface); border-bottom: 1px solid var(--color-border); overflow-x: auto; flex-shrink: 0; scrollbar-width: none; }
+.chat_tabs::-webkit-scrollbar { display: none; }
+.chat_tabs__btn { position: relative; appearance: none; border: none; background: transparent; font-family: var(--font-sans); font-size: 0.875rem; font-weight: 600; color: var(--color-text-muted); padding: 0.8rem 0.95rem; cursor: pointer; white-space: nowrap; display: inline-flex; align-items: center; gap: 0.4rem; border-bottom: 2px solid transparent; transition: color 0.15s ease; }
+.chat_tabs__btn:hover { color: var(--color-text); }
+.chat_tabs__btn--active { color: var(--color-text); }
+.chat_tabs__btn--active::after { content: ''; position: absolute; left: 0.95rem; right: 0.95rem; bottom: -1px; height: 2px; border-radius: 2px; background: var(--gradient-signature); }
+.chat_tabs__badge { min-width: 18px; height: 18px; padding: 0 5px; display: inline-flex; align-items: center; justify-content: center; font-size: 0.66rem; font-weight: 700; color: #fff; background: var(--gradient-signature); border-radius: 999px; }
+.chat_tabs__badge[hidden] { display: none; }
+
+/* Chat panel standalone (no longer a split workspace) */
+.chat_section[data-section-panel="chat"] .chat_panel { border-right: none; flex: 1; min-height: 0; }
+.chat_section[data-section-panel="site"] .site_preview { flex: 1; min-height: 0; }
+
+/* To-do as its own tab/panel */
+.chat_section[data-section-panel="todo"] .todo { max-width: 640px; width: 100%; margin: 0 auto; padding: 1.5rem max(1.25rem, env(safe-area-inset-left)); background: transparent; border: none; overflow: auto; }
+.todo__empty { color: var(--color-text-muted); font-size: 0.9rem; text-align: center; padding: 2.5rem 1rem; border: 1px dashed var(--color-border); border-radius: var(--radius-lg); background: var(--color-bg-subtle); }
+.todo__empty[hidden] { display: none; }
+
+/* Dashboard chat row with delete (agency) */
+.chat_row { display: flex; align-items: center; gap: 0.4rem; }
+.chat_row > a { flex: 1; min-width: 0; }
+.chat_row__del { flex-shrink: 0; width: 36px; height: 36px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--color-border); background: var(--color-surface); color: var(--color-text-muted); border-radius: var(--radius-sm); cursor: pointer; opacity: 0.5; transition: opacity 0.15s ease, color 0.15s ease, border-color 0.15s ease; }
+.chat_row:hover .chat_row__del, .chat_row__del:focus-visible { opacity: 1; }
+.chat_row__del:hover { color: #dc2626; border-color: #dc2626; }
+.chat_row__del:disabled { opacity: 0.4; cursor: default; }
+.chat_row__del svg { width: 16px; height: 16px; }

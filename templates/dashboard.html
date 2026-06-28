@@ -45,10 +45,17 @@
                     <p class="chat_inbox__hint">Pick up your chat with the team where you left off</p>
                     <div class="chat_item">
                         {% for chat in chats %}
-                            <a href="{{ url_for('chat', chat_id=chat[1]) }}">
-                                <span class="chat_item__name">{{ chat[0] }}</span>
-                                <span class="plan_badge plan_badge--{{ 'pro' if chat[2] else 'free' }}">{{ 'Pro' if chat[2] else 'Free' }}</span>
-                            </a>
+                            <div class="chat_row">
+                                <a href="{{ url_for('chat', chat_id=chat[1]) }}">
+                                    <span class="chat_item__name">{{ chat[0] }}</span>
+                                    <span class="plan_badge plan_badge--{{ 'pro' if chat[2] else 'free' }}">{{ 'Pro' if chat[2] else 'Free' }}</span>
+                                </a>
+                                {% if is_agency %}
+                                <button type="button" class="chat_row__del" data-chat-id="{{ chat[1] }}" data-name="{{ chat[0] }}" aria-label="Delete chat" title="Delete chat">
+                                    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13M10 11v6M14 11v6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                                </button>
+                                {% endif %}
+                            </div>
                         {% endfor %}
                     </div>
                 </div>
@@ -143,6 +150,29 @@
                         linkInput.select();
                         document.execCommand('copy');
                     }
+                });
+            })();
+        </script>
+        <script>
+            (function () {
+                document.querySelectorAll('.chat_row__del').forEach((btn) => {
+                    btn.addEventListener('click', async (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        const id = btn.dataset.chatId;
+                        const name = btn.dataset.name || 'this client';
+                        if (!confirm(`Delete the chat with ${name}? This permanently removes their messages, files and account. This cannot be undone.`)) return;
+                        btn.disabled = true;
+                        try {
+                            const res = await fetch(`/chat/${id}/delete`, { method: 'POST' });
+                            const data = await res.json().catch(() => ({}));
+                            if (!res.ok) throw new Error(data.error || 'Could not delete');
+                            btn.closest('.chat_row').remove();
+                        } catch (err) {
+                            alert(err.message);
+                            btn.disabled = false;
+                        }
+                    });
                 });
             })();
         </script>

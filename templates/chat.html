@@ -19,21 +19,18 @@
                 </h1>
                 <p class="chat_header__status" id="chat-presence-status" aria-live="polite" hidden></p>
             </div>
-            <div class="chat_switch" role="tablist" aria-label="Sections">
-                <button type="button" class="chat_switch__btn chat_switch__btn--active" data-section="chat" role="tab" aria-selected="true">Chat</button>
-                <button type="button" class="chat_switch__btn" data-section="vault" role="tab" aria-selected="false">PixiVault</button>
-                {% if admin %}<button type="button" class="chat_switch__btn" data-section="progress" role="tab" aria-selected="false">Progress</button>{% endif %}
-            </div>
             <a class="chat_header__back" href="{{ url_for('dashboard') }}">← Dashboard</a>
         </header>
 
-        <div class="chat_section" data-section-panel="chat">
-        <nav class="chat_mobile_tabs" aria-label="Chat views">
-            <button type="button" class="chat_mobile_tabs__btn chat_mobile_tabs__btn--active" data-view="chat">Messages</button>
-            <button type="button" class="chat_mobile_tabs__btn" data-view="site">Your site</button>
+        <nav class="chat_tabs" role="tablist" aria-label="Sections">
+            <button type="button" class="chat_tabs__btn chat_tabs__btn--active" data-section="chat" role="tab" aria-selected="true">Chat</button>
+            <button type="button" class="chat_tabs__btn" data-section="site" role="tab" aria-selected="false">Site</button>
+            <button type="button" class="chat_tabs__btn" data-section="vault" role="tab" aria-selected="false">PixiVault</button>
+            <button type="button" class="chat_tabs__btn" data-section="todo" role="tab" aria-selected="false">To-do<span class="chat_tabs__badge" id="todo-badge" hidden></span></button>
+            {% if admin %}<button type="button" class="chat_tabs__btn" data-section="progress" role="tab" aria-selected="false">Progress</button>{% endif %}
         </nav>
 
-        <div class="chat_workspace chat_workspace--mobile-chat" id="chat-workspace">
+        <div class="chat_section" data-section-panel="chat">
             <div class="chat_panel">
                 <div class="proj_banner" id="proj-banner" hidden>
                     <div class="proj_banner__top">
@@ -44,13 +41,6 @@
                         </span>
                     </div>
                     <div class="proj_banner__track"><div class="proj_banner__fill" id="proj-fill"></div></div>
-                </div>
-                <div class="todo" id="chat-todo" hidden>
-                    <div class="todo__head">
-                        <span class="todo__title">To-do</span>
-                        <span class="todo__count" id="todo-count"></span>
-                    </div>
-                    <ul class="todo__list" id="todo-list"></ul>
                 </div>
                 <div id="messages" class="messages">
                     {% for conversation in conversation_list %}
@@ -108,7 +98,9 @@
                     </div>
                 </form>
             </div>
+        </div><!-- /chat_section[chat] -->
 
+        <div class="chat_section" data-section-panel="site" hidden>
             <div id="site_preview" class="site_preview">
                 {% if admin %}
                     <div class="site_preview__controls">
@@ -145,9 +137,18 @@
                     {% endif %}
                 </div>
             </div>
-        </div>
+        </div><!-- /chat_section[site] -->
 
-        </div><!-- /chat_section[chat] -->
+        <div class="chat_section" data-section-panel="todo" hidden>
+            <div class="todo" id="chat-todo">
+                <div class="todo__head">
+                    <span class="todo__title">To-do</span>
+                    <span class="todo__count" id="todo-count"></span>
+                </div>
+                <ul class="todo__list" id="todo-list"></ul>
+                <p class="todo__empty" id="todo-empty" hidden>Nothing to fill in right now.</p>
+            </div>
+        </div>
 
         <div class="chat_section" data-section-panel="vault" hidden>
             <div class="vault" id="vault" data-chat-id="{{ chat_id }}">
@@ -232,7 +233,6 @@
             const fileInput = document.getElementById('message-files');
             const attachmentPreview = document.getElementById('attachment-preview');
             let pendingFiles = [];
-            const chatWorkspace = document.getElementById('chat-workspace');
             const sitePreviewToolbar = document.getElementById('site_preview_toolbar');
             const sitePreviewFallback = document.getElementById('site_preview_fallback');
             const openSiteTab = document.getElementById('open_site_tab');
@@ -366,9 +366,10 @@
                 renderMessages(data.messages, forceScroll);
             }
 
-            const todoCard = document.getElementById('chat-todo');
             const todoList = document.getElementById('todo-list');
             const todoCount = document.getElementById('todo-count');
+            const todoEmpty = document.getElementById('todo-empty');
+            const todoBadge = document.getElementById('todo-badge');
             let todoDragEl = null;
             let lastTodoSig = '';
 
@@ -392,8 +393,17 @@
                 if (sig === lastTodoSig) return;
                 lastTodoSig = sig;
 
-                if (!pending.length) { todoCard.hidden = true; todoList.innerHTML = ''; return; }
-                todoCard.hidden = false;
+                if (todoBadge) {
+                    todoBadge.textContent = pending.length;
+                    todoBadge.hidden = pending.length === 0;
+                }
+                if (!pending.length) {
+                    todoList.innerHTML = '';
+                    if (todoEmpty) todoEmpty.hidden = false;
+                    todoCount.textContent = 'All caught up';
+                    return;
+                }
+                if (todoEmpty) todoEmpty.hidden = true;
                 todoCount.textContent = pending.length + ' form' + (pending.length === 1 ? '' : 's') + ' to fill';
                 todoList.innerHTML = '';
                 pending.forEach(({ m }) => {
@@ -591,21 +601,6 @@
                 document.body.style.overflow = '';
             }
 
-            function setMobileView(view) {
-                chatWorkspace.classList.toggle('chat_workspace--mobile-chat', view === 'chat');
-                chatWorkspace.classList.toggle('chat_workspace--mobile-site', view === 'site');
-
-                document.querySelectorAll('.chat_mobile_tabs__btn').forEach((btn) => {
-                    btn.classList.toggle('chat_mobile_tabs__btn--active', btn.dataset.view === view);
-                });
-            }
-
-            document.querySelectorAll('.chat_mobile_tabs__btn').forEach((btn) => {
-                btn.addEventListener('click', () => {
-                    setMobileView(btn.dataset.view);
-                });
-            });
-
             document.getElementById('open_fullscreen')?.addEventListener('click', openSiteFullscreen);
             document.getElementById('close_fullscreen')?.addEventListener('click', closeSiteFullscreen);
 
@@ -771,7 +766,7 @@
                         const data = await response.json();
                         siteUrlInput.value = data.site_url;
                         showSitePreview(data.site_url);
-                        setMobileView('site');
+                        setSection('site');
                     }
                 });
             }
@@ -783,14 +778,14 @@
 
             // Primary section switch: Chat <-> PixiVault
             const sectionPanels = document.querySelectorAll('[data-section-panel]');
-            const sectionBtns = document.querySelectorAll('.chat_switch__btn');
+            const sectionBtns = document.querySelectorAll('.chat_tabs__btn');
             function setSection(section) {
                 sectionPanels.forEach((panel) => {
                     panel.hidden = panel.dataset.sectionPanel !== section;
                 });
                 sectionBtns.forEach((btn) => {
                     const active = btn.dataset.section === section;
-                    btn.classList.toggle('chat_switch__btn--active', active);
+                    btn.classList.toggle('chat_tabs__btn--active', active);
                     btn.setAttribute('aria-selected', active ? 'true' : 'false');
                 });
                 if (section === 'vault' && window.PixiVault) {

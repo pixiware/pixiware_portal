@@ -1435,6 +1435,50 @@ def chat_progress(chat_id):
 
     return jsonify({'progress': progress, 'delivery_date': delivery_date})
 
+@app.route('/chat/<int:chat_id>/delete', methods=['POST'])
+def chat_delete(chat_id):
+    user_id = session.get('user_id')
+    if not user_id:
+        return jsonify({'error': 'unauthorized'}), 401
+    paths = []
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            if not is_agency_role(get_user_role(cursor, user_id)):
+                return jsonify({'error': 'forbidden'}), 403
+            # the client must belong to this agency
+            cursor.execute('SELECT agency_id FROM public.users WHERE id = %s', (chat_id,))
+            row = cursor.fetchone()
+            if not row or row[0] != user_id:
+                return jsonify({'error': 'forbidden'}), 403
+            client_id = chat_id
+
+            cursor.execute(
+                "SELECT storage_path FROM public.vault_items WHERE client_id=%s AND kind='file' AND storage_path IS NOT NULL",
+                (client_id,),
+            )
+            paths = [r[0] for r in cursor.fetchall()]
+
+            cursor.execute('DELETE FROM public.vault_items WHERE client_id=%s', (client_id,))
+            cursor.execute('DELETE FROM public.form_submissions WHERE client_id=%s', (client_id,))
+            cursor.execute('DELETE FROM public.messages WHERE sender_id=%s OR receiver_id=%s', (client_id, client_id))
+            try:
+                cursor.execute('SAVEPOINT presence_del')
+                cursor.execute('DELETE FROM public.user_presence WHERE user_id=%s', (client_id,))
+                cursor.execute('RELEASE SAVEPOINT presence_del')
+            except psycopg.Error:
+                cursor.execute('ROLLBACK TO SAVEPOINT presence_del')
+
+            cursor.execute('SELECT chats FROM public.users WHERE id=%s', (user_id,))
+            agency_chats = cursor.fetchone()
+            remaining = [i for i in parse_chat_ids(agency_chats[0] if agency_chats else '') if i != client_id]
+            cursor.execute('UPDATE public.users SET chats=%s WHERE id=%s', (format_chat_ids(remaining), user_id))
+
+            cursor.execute('DELETE FROM public.users WHERE id=%s', (client_id,))
+
+    for path in paths:
+        delete_vault_object(path)
+    return jsonify({'ok': True})
+
 @app.route('/chat/<int:chat_id>/todos/reorder', methods=['POST'])
 def chat_todos_reorder(chat_id):
     user_id = session.get('user_id')
