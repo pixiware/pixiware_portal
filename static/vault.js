@@ -132,9 +132,37 @@
             currentFolder = item.id;
             selectedId = null;
             render();
+        } else if (item.mime && item.mime.indexOf('image/') === 0) {
+            openLightbox(item);
         } else {
             window.open(item.url, '_blank', 'noopener');
         }
+    }
+
+    function openLightbox(item) {
+        const ov = document.createElement('div');
+        ov.className = 'vault_lightbox';
+        ov.innerHTML =
+            '<div class="vault_lightbox__bar">' +
+            '<span class="vault_lightbox__name"></span>' +
+            '<a class="vault_lightbox__open" target="_blank" rel="noopener">Open ↗</a>' +
+            '<button type="button" class="vault_lightbox__close" aria-label="Close">✕</button>' +
+            '</div>' +
+            '<div class="vault_lightbox__stage"><img alt=""></div>';
+        ov.querySelector('.vault_lightbox__name').textContent = item.name;
+        ov.querySelector('.vault_lightbox__open').href = item.url;
+        const stage = ov.querySelector('.vault_lightbox__stage');
+        const img = ov.querySelector('img');
+        // cache-bust so a stale/expired cached response is never shown
+        img.src = item.url + (item.url.indexOf('?') === -1 ? '?' : '&') + 't=' + Date.now();
+        img.onerror = () => {
+            stage.innerHTML = '<p class="vault_lightbox__err">Couldn’t load this image. <a href="' + item.url + '" target="_blank" rel="noopener">Open it directly</a>.</p>';
+        };
+        function close() { ov.remove(); document.removeEventListener('keydown', onKey); }
+        function onKey(e) { if (e.key === 'Escape') close(); }
+        ov.addEventListener('click', (e) => { if (e.target === ov || e.target.closest('.vault_lightbox__close')) close(); });
+        document.addEventListener('keydown', onKey);
+        document.body.appendChild(ov);
     }
 
     // ---- mutations ----

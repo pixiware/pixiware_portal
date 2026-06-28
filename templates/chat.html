@@ -720,6 +720,16 @@
                 renderAttachmentPreview();
             });
 
+            function scrollMessagesToBottom() {
+                messagesEl.scrollTop = messagesEl.scrollHeight;
+            }
+            scrollMessagesToBottom();
+            // Re-pin to the bottom once images/attachments have loaded and changed the height.
+            window.addEventListener('load', scrollMessagesToBottom);
+            messagesEl.querySelectorAll('img').forEach((img) => {
+                if (!img.complete) img.addEventListener('load', scrollMessagesToBottom, { once: true });
+            });
+
             loadMessages(false);
             setInterval(() => {
                 if (!document.hidden) {

@@ -5,7 +5,7 @@ import os
 import secrets
 import uuid
 import psycopg
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from urllib.parse import quote, urlparse
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -746,6 +746,12 @@ _load_env_file()
 app = Flask(__name__)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 app.secret_key = os.environ.get('SECRET_KEY', 'dev')
+app.permanent_session_lifetime = timedelta(days=30)
+
+
+@app.before_request
+def _make_session_permanent():
+    session.permanent = True
 APP_URL = (os.environ.get('APP_URL') or '').rstrip('/')
 if APP_URL.startswith('https://'):
     app.config['SESSION_COOKIE_SECURE'] = True
