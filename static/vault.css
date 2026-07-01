@@ -244,6 +244,51 @@
     outline: none;
 }
 
+/* Selection action bar (works on desktop + touch; the reliable path on mobile) */
+.vault_actions {
+    position: sticky;
+    bottom: 0;
+    z-index: 20;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin-top: 0.2rem;
+    padding: 0.5rem;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-sm);
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+.vault_actions[hidden] { display: none; }
+.vault_actions__name {
+    font-weight: 600;
+    font-size: 0.8rem;
+    color: var(--color-text);
+    margin-right: auto;
+    padding-left: 0.2rem;
+    max-width: 38%;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.vault_actions__btn {
+    flex: 0 0 auto;
+    border: 1px solid var(--color-border);
+    background: var(--color-bg-subtle);
+    border-radius: var(--radius-sm);
+    padding: 0.5rem 0.85rem;
+    font-family: var(--font-sans);
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--color-text);
+    cursor: pointer;
+}
+.vault_actions__btn:hover { border-color: var(--color-emerald); color: var(--color-emerald-dark); }
+.vault_actions__btn--danger { color: #dc2626; }
+.vault_actions__btn--danger:hover { border-color: #dc2626; color: #dc2626; }
+
 /* Context menu */
 .vault_menu {
     position: fixed;
@@ -295,6 +340,10 @@
     .vault_item { width: 84px; }
     .vault_item__name { font-size: 0.7rem; }
     .vault_menu button { padding: 0.65rem 0.75rem; font-size: 0.875rem; }
+
+    /* 16px font stops iOS Safari zooming in when the rename field is focused */
+    .vault_item__rename { width: 88px; font-size: 16px; padding: 4px 5px; }
+    .vault_actions__btn { padding: 0.6rem 0.9rem; font-size: 0.9rem; }
 }
 
 /* Image lightbox */

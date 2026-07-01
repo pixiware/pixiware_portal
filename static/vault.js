@@ -23,6 +23,10 @@
     const childrenOf = (pid) => items.filter((i) => i.parent_id === pid);
     const now = () => (window.performance && performance.now ? performance.now() : Date.now());
 
+    // Touch screens jitter, so accidental drags are easy — need a bigger threshold.
+    const COARSE = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+    const DRAG_THRESHOLD = COARSE ? 12 : 7;
+
     function escapeHtml(text) {
         return String(text)
             .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -88,6 +92,7 @@
         emptyEl.hidden = kids.length > 0;
         kids.forEach(renderItem);
         renderBreadcrumb();
+        updateActionBar();
     }
 
     function crumb(label, folderId) {
@@ -125,6 +130,44 @@
         canvas.querySelectorAll('.vault_item').forEach((el) => {
             el.classList.toggle('vault_item--selected', Number(el.dataset.id) === id);
         });
+        updateActionBar();
+    }
+
+    // Always-visible action bar for the selected item. On touch this replaces the
+    // fiddly long-press menu with reliable, big-target buttons (esp. Rename).
+    let actionBar = null;
+    function ensureActionBar() {
+        if (actionBar) return actionBar;
+        actionBar = document.createElement('div');
+        actionBar.className = 'vault_actions';
+        actionBar.hidden = true;
+        root.appendChild(actionBar);
+        return actionBar;
+    }
+    function updateActionBar() {
+        const bar = ensureActionBar();
+        const item = selectedId != null ? byId(selectedId) : null;
+        if (!item) { bar.hidden = true; bar.innerHTML = ''; return; }
+        bar.innerHTML = '';
+        const name = document.createElement('span');
+        name.className = 'vault_actions__name';
+        name.textContent = item.name;
+        bar.appendChild(name);
+        const acts = [
+            { label: item.kind === 'folder' ? 'Open' : 'Open', run: () => openItem(item) },
+            { label: 'Rename', run: () => startRename(item.id) },
+        ];
+        if (item.parent_id != null) acts.push({ label: 'Move out', run: () => moveOut(item) });
+        acts.push({ label: 'Delete', danger: true, run: () => deleteItem(item) });
+        acts.forEach((a) => {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'vault_actions__btn' + (a.danger ? ' vault_actions__btn--danger' : '');
+            b.textContent = a.label;
+            b.addEventListener('click', a.run);
+            bar.appendChild(b);
+        });
+        bar.hidden = false;
     }
 
     function openItem(item) {
@@ -197,7 +240,8 @@
         input.value = item.name;
         nameEl.replaceWith(input);
         input.focus();
-        input.select();
+        // iOS needs an explicit range to select and to reliably raise the keyboard.
+        try { input.setSelectionRange(0, input.value.length); } catch (_) { input.select(); }
 
         let settled = false;
         const finish = async (save) => {
@@ -322,7 +366,7 @@
             function onMove(ev) {
                 lastX = ev.clientX; lastY = ev.clientY;
                 const dx = ev.clientX - startX, dy = ev.clientY - startY;
-                if (!moved && Math.hypot(dx, dy) < 7) return;
+                if (!moved && Math.hypot(dx, dy) < DRAG_THRESHOLD) return;
                 if (!moved) { moved = true; clearTimeout(longTimer); el.classList.add('vault_item--dragging'); el.style.pointerEvents = 'none'; }
                 curX = Math.max(0, origX + dx);
                 curY = Math.max(0, origY + dy);

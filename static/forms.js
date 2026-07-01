@@ -33,10 +33,14 @@ window.PixiForms = (function () {
             });
             lab.append(inp, span);
             wrap.appendChild(lab);
-            if (field.folder) {
+            const toRoot = field.to_root !== undefined ? field.to_root : !field.folder;
+            const dests = [];
+            if (toRoot) dests.push('main vault');
+            if (field.folder) dests.push('the "' + field.folder + '" folder');
+            if (dests.length) {
                 const hint = document.createElement('div');
                 hint.className = 'form_field__hint';
-                hint.textContent = '→ saved to "' + field.folder + '" in PixiVault';
+                hint.textContent = '→ saved to ' + dests.join(' and ') + ' in PixiVault';
                 wrap.appendChild(hint);
             }
         } else {

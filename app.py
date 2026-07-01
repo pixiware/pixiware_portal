@@ -455,6 +455,16 @@ def normalize_form_schema(raw):
             entry['placeholder'] = str(field.get('placeholder') or '').strip()[:200]
         if ftype == 'file':
             entry['folder'] = str(field.get('folder') or '').strip()[:120]
+            # Where uploads land in the client's vault. Older forms only stored a
+            # folder, so default to_root to "on" only when no folder was given
+            # (i.e. preserve the old behaviour: folder set -> folder only).
+            if 'to_root' in field:
+                entry['to_root'] = bool(field.get('to_root'))
+            else:
+                entry['to_root'] = not entry['folder']
+            # A file field must save somewhere; never allow "nowhere".
+            if not entry['to_root'] and not entry['folder']:
+                entry['to_root'] = True
         clean.append(entry)
     return {'fields': clean[:50]}
 
@@ -1717,7 +1727,19 @@ def vault_delete(chat_id, item_id):
             if not cursor.rowcount:
                 return jsonify({'error': 'not found'}), 404
 
-    for path in paths:
+            # A storage object can be shared by several vault items (a file saved
+            # to both the root and a folder). Only drop the object once nothing
+            # else points at it.
+            orphaned = []
+            for path in paths:
+                cursor.execute(
+                    'SELECT 1 FROM public.vault_items WHERE storage_path = %s LIMIT 1',
+                    (path,),
+                )
+                if not cursor.fetchone():
+                    orphaned.append(path)
+
+    for path in orphaned:
         delete_vault_object(path)
     return jsonify({'ok': True})
 
@@ -2029,20 +2051,33 @@ def chat_form_submit(chat_id, message_id):
                     if field.get('required') and not files:
                         return jsonify({'error': f'{label} is required'}), 400
                     folder = field.get('folder') or ''
+                    to_root = field.get('to_root', not folder)
                     folder_id = ensure_vault_folder(cursor, client_id, folder, user_id) if folder else None
+                    # Destinations for each uploaded file: the root (parent NULL)
+                    # and/or the named folder. Always keep at least one.
+                    targets = []
+                    if to_root:
+                        targets.append(None)
+                    if folder_id is not None:
+                        targets.append(folder_id)
+                    if not targets:
+                        targets.append(None)
                     saved = []
                     for fs in files:
                         try:
                             stored = upload_vault_object(fs, client_id)
                         except ValueError as exc:
                             return jsonify({'error': str(exc)}), 400
-                        cursor.execute(
-                            "INSERT INTO public.vault_items (client_id, parent_id, kind, name, pos_x, pos_y, storage_path, mime, size_bytes, uploaded_by) "
-                            "VALUES (%s, %s, 'file', %s, 40, 40, %s, %s, %s, %s)",
-                            (client_id, folder_id, fs.filename[:200], stored['path'], stored['mime'], stored['size'], user_id),
-                        )
+                        # One uploaded object can be referenced from more than one
+                        # vault item (e.g. root + folder); they share storage_path.
+                        for parent_id in targets:
+                            cursor.execute(
+                                "INSERT INTO public.vault_items (client_id, parent_id, kind, name, pos_x, pos_y, storage_path, mime, size_bytes, uploaded_by) "
+                                "VALUES (%s, %s, 'file', %s, 40, 40, %s, %s, %s, %s)",
+                                (client_id, parent_id, fs.filename[:200], stored['path'], stored['mime'], stored['size'], user_id),
+                            )
                         saved.append(fs.filename)
-                    answers.append({'label': label, 'type': 'file', 'files': saved, 'folder': folder})
+                    answers.append({'label': label, 'type': 'file', 'files': saved, 'folder': folder, 'to_root': to_root})
                 else:
                     value = (request.form.get(fid) or '').strip()
                     if field.get('required') and not value:

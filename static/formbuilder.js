@@ -13,9 +13,14 @@
     let renaming = false;
     let lastTap = { id: null, t: 0 };
 
+    const root = document.getElementById('forms');
     const byId = (id) => items.find((i) => i.id === id);
     const childrenOf = (pid) => items.filter((i) => i.parent_id === pid);
     const nowTs = () => (window.performance && performance.now ? performance.now() : Date.now());
+
+    // Touch screens jitter, so accidental drags are easy — need a bigger threshold.
+    const COARSE = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+    const DRAG_THRESHOLD = COARSE ? 12 : 7;
     const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
     async function api(path, opts) {
@@ -59,6 +64,7 @@
         emptyEl.hidden = kids.length > 0;
         kids.forEach(renderItem);
         renderBreadcrumb();
+        updateActionBar();
     }
 
     function crumb(label, folderId) {
@@ -85,6 +91,43 @@
     function selectItem(id) {
         selectedId = id;
         canvas.querySelectorAll('.vault_item').forEach((el) => el.classList.toggle('vault_item--selected', Number(el.dataset.id) === id));
+        updateActionBar();
+    }
+
+    // Always-visible action bar for the selected item — reliable Rename/Delete on touch.
+    let actionBar = null;
+    function ensureActionBar() {
+        if (actionBar) return actionBar;
+        actionBar = document.createElement('div');
+        actionBar.className = 'vault_actions';
+        actionBar.hidden = true;
+        if (root) root.appendChild(actionBar);
+        return actionBar;
+    }
+    function updateActionBar() {
+        const bar = ensureActionBar();
+        const item = selectedId != null ? byId(selectedId) : null;
+        if (!item) { bar.hidden = true; bar.innerHTML = ''; return; }
+        bar.innerHTML = '';
+        const name = document.createElement('span');
+        name.className = 'vault_actions__name';
+        name.textContent = item.name;
+        bar.appendChild(name);
+        const acts = [
+            { label: item.kind === 'folder' ? 'Open' : 'Edit', run: () => openItem(item) },
+            { label: 'Rename', run: () => startRename(item.id) },
+        ];
+        if (item.parent_id != null) acts.push({ label: 'Move out', run: () => moveOut(item) });
+        acts.push({ label: 'Delete', danger: true, run: () => deleteItem(item) });
+        acts.forEach((a) => {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'vault_actions__btn' + (a.danger ? ' vault_actions__btn--danger' : '');
+            b.textContent = a.label;
+            b.addEventListener('click', a.run);
+            bar.appendChild(b);
+        });
+        bar.hidden = false;
     }
 
     function openItem(item) {
@@ -116,7 +159,8 @@
         input.className = 'vault_item__rename';
         input.value = item.name;
         nameEl.replaceWith(input);
-        input.focus(); input.select();
+        input.focus();
+        try { input.setSelectionRange(0, input.value.length); } catch (_) { input.select(); }
         let settled = false;
         const finish = async (save) => {
             if (settled) return; settled = true; renaming = false;
@@ -184,7 +228,7 @@
             function onMove(ev) {
                 lx = ev.clientX; ly = ev.clientY;
                 const dx = ev.clientX - sx, dy = ev.clientY - sy;
-                if (!moved && Math.hypot(dx, dy) < 7) return;
+                if (!moved && Math.hypot(dx, dy) < DRAG_THRESHOLD) return;
                 if (!moved) { moved = true; clearTimeout(longTimer); el.classList.add('vault_item--dragging'); el.style.pointerEvents = 'none'; }
                 cx = Math.max(0, ox + dx); cy = Math.max(0, oy + dy);
                 el.style.left = cx + 'px'; el.style.top = cy + 'px';
@@ -277,7 +321,7 @@
     function closeBuilder() { fb.hidden = true; }
 
     function addField(type) {
-        fields.push({ id: 'f' + (fieldSeq++), type: type, label: '', required: false, placeholder: '', folder: type === 'file' ? '' : undefined });
+        fields.push({ id: 'f' + (fieldSeq++), type: type, label: '', required: false, placeholder: '', folder: type === 'file' ? '' : undefined, to_root: type === 'file' ? true : undefined });
         renderBuilder();
     }
 
@@ -315,14 +359,7 @@
         reqLabel.append(req, document.createTextNode(' Required'));
         row.appendChild(reqLabel);
 
-        if (field.type === 'file') {
-            const folder = document.createElement('input');
-            folder.type = 'text';
-            folder.placeholder = 'Save uploads to folder (e.g. favicons)';
-            folder.value = field.folder || '';
-            folder.addEventListener('input', () => { field.folder = folder.value; renderPreview(); });
-            row.appendChild(folder);
-        } else {
+        if (field.type !== 'file') {
             const ph = document.createElement('input');
             ph.type = 'text';
             ph.placeholder = 'Placeholder (optional)';
@@ -331,6 +368,63 @@
             row.appendChild(ph);
         }
         card.appendChild(row);
+
+        if (field.type === 'file') {
+            // Where the client's uploaded file is saved in their PixiVault.
+            if (field.to_root === undefined) field.to_root = !field.folder;
+            const save = document.createElement('div');
+            save.className = 'fb_field__save';
+
+            const heading = document.createElement('div');
+            heading.className = 'fb_field__save-title';
+            heading.textContent = 'Where do uploads get saved?';
+            save.appendChild(heading);
+
+            const rootLabel = document.createElement('label');
+            rootLabel.className = 'fb_field__check';
+            const root = document.createElement('input');
+            root.type = 'checkbox';
+            root.checked = field.to_root !== false;
+            rootLabel.append(root, document.createTextNode(' Save to main vault'));
+
+            const folderLabel = document.createElement('label');
+            folderLabel.className = 'fb_field__check';
+            const useFolder = document.createElement('input');
+            useFolder.type = 'checkbox';
+            useFolder.checked = !!field.folder;
+            folderLabel.append(useFolder, document.createTextNode(' Save into a folder'));
+
+            const folder = document.createElement('input');
+            folder.type = 'text';
+            folder.className = 'fb_field__folder';
+            folder.placeholder = 'Folder name (e.g. icons)';
+            folder.value = field.folder || '';
+            folder.hidden = !useFolder.checked;
+
+            const note = document.createElement('p');
+            note.className = 'fb_field__note';
+            note.textContent = 'The folder is created automatically if it doesn’t exist yet.';
+            note.hidden = !useFolder.checked;
+
+            function sync() {
+                // A file has to land somewhere — keep at least one box ticked.
+                if (!root.checked && !useFolder.checked) { root.checked = true; }
+                folder.hidden = !useFolder.checked;
+                note.hidden = !useFolder.checked;
+                field.to_root = root.checked;
+                field.folder = useFolder.checked ? folder.value.trim() : '';
+                renderPreview();
+            }
+            root.addEventListener('change', sync);
+            useFolder.addEventListener('change', () => { sync(); if (useFolder.checked) folder.focus(); });
+            folder.addEventListener('input', () => { field.folder = folder.value.trim(); renderPreview(); });
+
+            const checks = document.createElement('div');
+            checks.className = 'fb_field__checks';
+            checks.append(rootLabel, folderLabel);
+            save.append(checks, folder, note);
+            card.appendChild(save);
+        }
         return card;
     }
 
@@ -362,7 +456,7 @@
         label.className = 'fb__preview-label';
         label.textContent = 'Live preview';
         fbPreview.appendChild(label);
-        const clean = fields.map((f) => ({ id: f.id, type: f.type, label: f.label || 'Untitled', required: f.required, placeholder: f.placeholder, folder: f.folder }));
+        const clean = fields.map((f) => ({ id: f.id, type: f.type, label: f.label || 'Untitled', required: f.required, placeholder: f.placeholder, folder: f.folder, to_root: f.to_root }));
         fbPreview.appendChild(window.PixiForms.buildFormCard({ name: fbTitle.value || 'Untitled form', fields: clean }, { mode: 'preview' }));
     }
 
@@ -370,8 +464,13 @@
         const name = (fbTitle.value || '').trim() || 'Untitled form';
         const schema = { fields: fields.map((f) => {
             const o = { id: f.id, type: f.type, label: (f.label || '').trim() || 'Untitled', required: !!f.required };
-            if (f.type === 'file') o.folder = (f.folder || '').trim();
-            else o.placeholder = (f.placeholder || '').trim();
+            if (f.type === 'file') {
+                o.folder = (f.folder || '').trim();
+                o.to_root = f.to_root !== false;
+                if (!o.to_root && !o.folder) o.to_root = true;
+            } else {
+                o.placeholder = (f.placeholder || '').trim();
+            }
             return o;
         }) };
         try {
