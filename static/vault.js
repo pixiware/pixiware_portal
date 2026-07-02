@@ -237,53 +237,15 @@
     }
 
     function startRename(id) {
-        const el = canvas.querySelector(`.vault_item[data-id="${id}"]`);
         const item = byId(id);
-        if (!el || !item) return;
-
-        // On touch devices the inline input's programmatic focus is unreliable
-        // (iOS Safari often refuses to raise the keyboard), so use a native
-        // prompt — it always works and can't silently "do nothing".
-        if (COARSE) {
-            const value = window.prompt('Rename', item.name);
-            if (value == null) return;
-            commitRename(id, item, value.trim());
-            return;
-        }
-
-        const nameEl = el.querySelector('.vault_item__name');
-        if (!nameEl) return;
-
-        renaming = true;
-        const input = document.createElement('input');
-        input.className = 'vault_item__rename';
-        input.value = item.name;
-        nameEl.replaceWith(input);
-        input.focus();
-        // iOS needs an explicit range to select and to reliably raise the keyboard.
-        try { input.setSelectionRange(0, input.value.length); } catch (_) { input.select(); }
-
-        let settled = false;
-        const finish = async (save) => {
-            if (settled) return;
-            settled = true;
-            renaming = false;
-            const value = input.value.trim();
-            if (save && value && value !== item.name) {
-                item.name = value;
-                try {
-                    await api(`/chat/${chatId}/vault/item/${id}/rename`, { method: 'POST', json: { name: value } });
-                } catch (err) { load(); return; }
-            }
-            render();
-        };
-
-        input.addEventListener('pointerdown', (e) => e.stopPropagation());
-        input.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter') { e.preventDefault(); finish(true); }
-            else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
-        });
-        input.addEventListener('blur', () => finish(true));
+        if (!item) return;
+        // A native prompt is used on every device. It always raises the keyboard
+        // on touch, and on desktop it avoids a focus/blur race where an open
+        // inline input would rebuild (and destroy) the action-bar button
+        // mid-click, making Rename/Delete silently "do nothing".
+        const value = window.prompt('Rename', item.name);
+        if (value == null) return;
+        commitRename(id, item, value.trim());
     }
 
     function collectSubtree(id) {
