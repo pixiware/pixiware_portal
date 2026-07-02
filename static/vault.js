@@ -227,10 +227,30 @@
         moveItem(item, { parent_id: parent ? parent.parent_id : null, x: 40, y: 40 });
     }
 
+    async function commitRename(id, item, name) {
+        if (!name || name === item.name) return;
+        item.name = name;
+        render();
+        try {
+            await api(`/chat/${chatId}/vault/item/${id}/rename`, { method: 'POST', json: { name } });
+        } catch (err) { load(); }
+    }
+
     function startRename(id) {
         const el = canvas.querySelector(`.vault_item[data-id="${id}"]`);
         const item = byId(id);
         if (!el || !item) return;
+
+        // On touch devices the inline input's programmatic focus is unreliable
+        // (iOS Safari often refuses to raise the keyboard), so use a native
+        // prompt — it always works and can't silently "do nothing".
+        if (COARSE) {
+            const value = window.prompt('Rename', item.name);
+            if (value == null) return;
+            commitRename(id, item, value.trim());
+            return;
+        }
+
         const nameEl = el.querySelector('.vault_item__name');
         if (!nameEl) return;
 

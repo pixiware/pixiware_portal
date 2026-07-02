@@ -781,6 +781,18 @@ def external_url(endpoint, **values):
     return url_for(endpoint, _external=True, **values)
 
 
+@app.template_global()
+def asset(filename):
+    # Append the file's mtime as a version query so browsers/CDNs can't serve a
+    # stale JS/CSS after a deploy (a common cause of "my fix didn't take" on mobile).
+    url = url_for('static', filename=filename)
+    try:
+        version = int(os.path.getmtime(os.path.join(app.static_folder, filename)))
+    except OSError:
+        return url
+    return f'{url}?v={version}'
+
+
 def ensure_stripe_schema(conn):
     global _stripe_schema_ready
     if _stripe_schema_ready:

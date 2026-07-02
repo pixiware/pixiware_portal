@@ -4,10 +4,10 @@
         <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
         <meta name="theme-color" content="#10b981">
         <title>Chat with {{ other_persons_name }}</title>
-        <link rel="stylesheet" href="{{ url_for('static', filename='base_styles.css') }}">
-        <link rel="stylesheet" href="{{ url_for('static', filename='chat.css') }}">
-        <link rel="stylesheet" href="{{ url_for('static', filename='vault.css') }}">
-        <link rel="stylesheet" href="{{ url_for('static', filename='forms.css') }}">
+        <link rel="stylesheet" href="{{ asset('base_styles.css') }}">
+        <link rel="stylesheet" href="{{ asset('chat.css') }}">
+        <link rel="stylesheet" href="{{ asset('vault.css') }}">
+        <link rel="stylesheet" href="{{ asset('forms.css') }}">
     </head>
     <body>
         <header class="chat_header">
@@ -871,8 +871,8 @@
 
             setInterval(() => { if (!document.hidden) loadProgress(); }, 12000);
         </script>
-        <script src="{{ url_for('static', filename='vault.js') }}"></script>
-        <script src="{{ url_for('static', filename='forms.js') }}"></script>
-        <script src="{{ url_for('static', filename='notify.js') }}"></script>
+        <script src="{{ asset('vault.js') }}"></script>
+        <script src="{{ asset('forms.js') }}"></script>
+        <script src="{{ asset('notify.js') }}"></script>
     </body>
 </html>
