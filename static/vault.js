@@ -15,8 +15,6 @@
     let currentFolder = null; // null = root
     let selectedId = null;
     let loaded = false;
-    let openMenu = null;
-    let renaming = false;
     let lastTap = { id: null, t: 0 };
 
     const byId = (id) => items.find((i) => i.id === id);
@@ -283,7 +281,6 @@
             items.push(data.item);
             render();
             selectItem(data.item.id);
-            startRename(data.item.id);
         } catch (err) { window.alert(err.message); }
     }
 
@@ -320,36 +317,22 @@
         breadcrumb.querySelectorAll('.vault__crumb--drop').forEach((n) => n.classList.remove('vault__crumb--drop'));
     }
 
-    // ---- unified pointer interaction (tap/double-tap/long-press/drag) ----
+    // ---- pointer interaction: tap = select, double-tap = open, drag = move ----
+    // Rename/delete live only on the action bar (updateActionBar) — one method,
+    // identical on desktop and touch. No context menu, no long-press.
     function attach(el, item) {
-        el.addEventListener('contextmenu', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            selectItem(item.id);
-            showItemMenu(item, e.clientX, e.clientY);
-        });
-
         el.addEventListener('pointerdown', (e) => {
-            if (e.button === 2 || renaming) return;
+            if (e.button === 2) return;
             const startX = e.clientX, startY = e.clientY;
             const origX = item.x, origY = item.y;
-            let moved = false, curX = origX, curY = origY, longPressed = false;
-            let lastX = e.clientX, lastY = e.clientY;
+            let moved = false, curX = origX, curY = origY;
+
             try { el.setPointerCapture(e.pointerId); } catch (_) {}
 
-            const longTimer = setTimeout(() => {
-                if (!moved) {
-                    longPressed = true;
-                    selectItem(item.id);
-                    showItemMenu(item, lastX, lastY);
-                }
-            }, 500);
-
             function onMove(ev) {
-                lastX = ev.clientX; lastY = ev.clientY;
                 const dx = ev.clientX - startX, dy = ev.clientY - startY;
                 if (!moved && Math.hypot(dx, dy) < DRAG_THRESHOLD) return;
-                if (!moved) { moved = true; clearTimeout(longTimer); el.classList.add('vault_item--dragging'); el.style.pointerEvents = 'none'; }
+                if (!moved) { moved = true; el.classList.add('vault_item--dragging'); el.style.pointerEvents = 'none'; }
                 curX = Math.max(0, origX + dx);
                 curY = Math.max(0, origY + dy);
                 el.style.left = curX + 'px';
@@ -360,7 +343,6 @@
             }
 
             function cleanup() {
-                clearTimeout(longTimer);
                 el.removeEventListener('pointermove', onMove);
                 el.removeEventListener('pointerup', onUp);
                 el.removeEventListener('pointercancel', onCancel);
@@ -381,8 +363,7 @@
                     else render();
                     return;
                 }
-                if (longPressed) return;
-                // a tap: second tap on same item opens it, otherwise select
+                // a tap: second tap on the same item opens it, otherwise selects it
                 const t = now();
                 if (lastTap.id === item.id && (t - lastTap.t) < 400) {
                     lastTap = { id: null, t: 0 };
@@ -397,52 +378,6 @@
             el.addEventListener('pointerup', onUp);
             el.addEventListener('pointercancel', onCancel);
         });
-    }
-
-    // ---- context menus ----
-    function closeMenu() { if (openMenu) { openMenu.remove(); openMenu = null; } }
-
-    function buildMenu(entries, x, y) {
-        closeMenu();
-        const menu = document.createElement('div');
-        menu.className = 'vault_menu';
-        entries.forEach((entry) => {
-            if (entry === '-') {
-                const sep = document.createElement('div');
-                sep.className = 'vault_menu__sep';
-                menu.appendChild(sep);
-                return;
-            }
-            const btn = document.createElement('button');
-            btn.type = 'button';
-            btn.dataset.act = entry.act;
-            btn.textContent = entry.label;
-            btn.addEventListener('click', () => { closeMenu(); entry.run(); });
-            menu.appendChild(btn);
-        });
-        document.body.appendChild(menu);
-        const rect = menu.getBoundingClientRect();
-        menu.style.left = Math.max(8, Math.min(x, window.innerWidth - rect.width - 8)) + 'px';
-        menu.style.top = Math.max(8, Math.min(y, window.innerHeight - rect.height - 8)) + 'px';
-        openMenu = menu;
-        setTimeout(() => document.addEventListener('pointerdown', closeMenu, { once: true }), 0);
-    }
-
-    function showItemMenu(item, x, y) {
-        const entries = [
-            { act: 'open', label: item.kind === 'folder' ? 'Open' : 'Open / download', run: () => openItem(item) },
-            { act: 'rename', label: 'Rename', run: () => startRename(item.id) },
-        ];
-        if (item.parent_id != null) entries.push({ act: 'moveout', label: 'Move out of folder', run: () => moveOut(item) });
-        entries.push('-', { act: 'delete', label: item.kind === 'folder' ? 'Delete folder' : 'Delete file', run: () => deleteItem(item) });
-        buildMenu(entries, x, y);
-    }
-
-    function showCanvasMenu(x, y) {
-        buildMenu([
-            { act: 'newfolder', label: 'New folder', run: createFolder },
-            { act: 'upload', label: 'Upload files…', run: () => fileInput.click() },
-        ], x, y);
     }
 
     // ---- load ----
@@ -462,22 +397,15 @@
     uploadBtn.addEventListener('click', () => fileInput.click());
     fileInput.addEventListener('change', () => { uploadFiles(fileInput.files, { x: 56, y: 56 }); fileInput.value = ''; });
 
-    // empty-canvas: tap to deselect, long-press / right-click for menu
-    let canvasLongTimer = null;
+    // tap empty space to deselect (hides the action bar). New folder / Upload
+    // live on the toolbar buttons above — no canvas menu.
     canvas.addEventListener('pointerdown', (e) => {
         if (e.target !== canvas && !e.target.closest('.vault__empty')) return;
         selectItem(null);
-        const x = e.clientX, y = e.clientY;
-        canvasLongTimer = setTimeout(() => showCanvasMenu(x, y), 500);
-    });
-    canvas.addEventListener('pointermove', () => { if (canvasLongTimer) { clearTimeout(canvasLongTimer); canvasLongTimer = null; } });
-    canvas.addEventListener('pointerup', () => { if (canvasLongTimer) { clearTimeout(canvasLongTimer); canvasLongTimer = null; } });
-    canvas.addEventListener('contextmenu', (e) => {
-        if (e.target === canvas || e.target.closest('.vault__empty')) { e.preventDefault(); showCanvasMenu(e.clientX, e.clientY); }
     });
 
     canvas.addEventListener('keydown', (e) => {
-        if (renaming || selectedId == null) return;
+        if (selectedId == null) return;
         if (e.key === 'Delete' || e.key === 'Backspace') { const it = byId(selectedId); if (it) deleteItem(it); }
         else if (e.key === 'Enter') { startRename(selectedId); }
     });
