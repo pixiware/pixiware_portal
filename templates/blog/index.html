@@ -1,0 +1,31 @@
+{% extends "blog/base.html" %}
+
+{% block main %}
+<section class="blog-hero">
+    <span class="blog-hero__eyebrow">The Pixiware Blog</span>
+    <h1 class="blog-hero__title">Web design in Bristol, explained</h1>
+    <p class="blog-hero__lede">
+        Straight-talking guides on what a website really costs, how to choose a
+        designer, and how to get a site that wins you customers in Bristol and
+        the South West.
+    </p>
+</section>
+
+<section class="post-grid" aria-label="Latest articles">
+    {% for article in articles %}
+    <article class="post-card">
+        <a class="post-card__link" href="{{ url_for('blog_article', slug=article.slug) }}">
+            <span class="post-card__cat">{{ article.category }}</span>
+            <h2 class="post-card__title">{{ article.h1 }}</h2>
+            <p class="post-card__excerpt">{{ article.excerpt }}</p>
+            <div class="post-card__meta">
+                <time datetime="{{ article.published }}">{{ article.published_human }}</time>
+                <span aria-hidden="true">&middot;</span>
+                <span>{{ article.read_time }}</span>
+            </div>
+            <span class="post-card__more">Read guide &rarr;</span>
+        </a>
+    </article>
+    {% endfor %}
+</section>
+{% endblock %}
