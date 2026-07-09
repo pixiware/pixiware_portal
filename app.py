@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, redirect, url_for, session, jsonify, Response
+from flask import Flask, render_template, request, redirect, url_for, session, jsonify, Response, abort
 import json
 import mimetypes
 import os
@@ -14,7 +14,7 @@ from werkzeug.utils import secure_filename
 from werkzeug.middleware.proxy_fix import ProxyFix
 import stripe
 
-from blog_content import ARTICLES, ARTICLES_BY_SLUG, BLOG_NAME, BLOG_DESCRIPTION
+import blog_content
 
 ATTACHMENTS_BUCKET = 'message_attatchments'
 VAULT_BUCKET = 'vault_documents'
@@ -981,6 +981,157 @@ def index():
     if session.get('user_id'):
         return redirect(url_for('dashboard'))
     return render_template('sign-in.html')
+
+
+# ---------------------------------------------------------------------------
+# Public marketing blog (SEO landing pages for Bristol web design searches)
+# ---------------------------------------------------------------------------
+
+def _format_blog_date(iso_date):
+    try:
+        return datetime.strptime(iso_date, '%Y-%m-%d').strftime('%-d %B %Y')
+    except (ValueError, TypeError):
+        return iso_date
+
+
+def _blog_common_context():
+    return {
+        'business': blog_content.BUSINESS,
+        'all_posts': blog_content.posts_for_index(),
+        'current_year': datetime.now(timezone.utc).year,
+    }
+
+
+def _blog_index_structured_data(canonical):
+    data = {
+        '@context': 'https://schema.org',
+        '@type': 'Blog',
+        'name': f"{blog_content.BUSINESS['name']} — Bristol web design blog",
+        'url': canonical,
+        'publisher': {'@type': 'Organization', 'name': blog_content.BUSINESS['name']},
+        'blogPost': [
+            {
+                '@type': 'BlogPosting',
+                'headline': post['title'],
+                'description': post['meta_description'],
+                'url': external_url('blog_post', slug=post['slug']),
+                'datePublished': post['published'],
+                'dateModified': post['updated'],
+            }
+            for post in blog_content.posts_for_index()
+        ],
+    }
+    return json.dumps(data)
+
+
+def _blog_post_structured_data(post, canonical):
+    article = {
+        '@type': 'BlogPosting',
+        'headline': post['title'],
+        'description': post['meta_description'],
+        'keywords': post['keyword'],
+        'datePublished': post['published'],
+        'dateModified': post['updated'],
+        'url': canonical,
+        'mainEntityOfPage': {'@type': 'WebPage', '@id': canonical},
+        'author': {'@type': 'Organization', 'name': blog_content.BUSINESS['name']},
+        'publisher': {'@type': 'Organization', 'name': blog_content.BUSINESS['name']},
+        'articleSection': 'Web design Bristol',
+    }
+    breadcrumb = {
+        '@type': 'BreadcrumbList',
+        'itemListElement': [
+            {
+                '@type': 'ListItem',
+                'position': 1,
+                'name': 'Blog',
+                'item': external_url('blog_index'),
+            },
+            {
+                '@type': 'ListItem',
+                'position': 2,
+                'name': post['keyword'].title(),
+                'item': canonical,
+            },
+        ],
+    }
+    faq = {
+        '@type': 'FAQPage',
+        'mainEntity': [
+            {
+                '@type': 'Question',
+                'name': item['q'],
+                'acceptedAnswer': {'@type': 'Answer', 'text': item['a']},
+            }
+            for item in post['faqs']
+        ],
+    }
+    return json.dumps({'@context': 'https://schema.org', '@graph': [article, breadcrumb, faq]})
+
+
+@app.route('/blog')
+def blog_index():
+    canonical = external_url('blog_index')
+    return render_template(
+        'blog/index.html',
+        canonical=canonical,
+        structured_data=_blog_index_structured_data(canonical),
+        **_blog_common_context(),
+    )
+
+
+@app.route('/blog/<slug>')
+def blog_post(slug):
+    post = blog_content.get_post(slug)
+    if not post:
+        abort(404)
+    canonical = external_url('blog_post', slug=slug)
+    post_view = dict(post, updated_display=_format_blog_date(post['updated']))
+    return render_template(
+        'blog/post.html',
+        post=post_view,
+        canonical=canonical,
+        related_posts=blog_content.get_related_posts(post),
+        structured_data=_blog_post_structured_data(post, canonical),
+        **_blog_common_context(),
+    )
+
+
+@app.route('/sitemap.xml')
+def sitemap():
+    urls = [
+        (external_url('index'), None, '1.0'),
+        (external_url('blog_index'), blog_content._UPDATED, '0.9'),
+    ]
+    for post in blog_content.posts_for_index():
+        urls.append((external_url('blog_post', slug=post['slug']), post['updated'], '0.8'))
+
+    parts = ['<?xml version="1.0" encoding="UTF-8"?>',
+             '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">']
+    for loc, lastmod, priority in urls:
+        parts.append('  <url>')
+        parts.append(f'    <loc>{loc}</loc>')
+        if lastmod:
+            parts.append(f'    <lastmod>{lastmod}</lastmod>')
+        parts.append(f'    <priority>{priority}</priority>')
+        parts.append('  </url>')
+    parts.append('</urlset>')
+    return Response('\n'.join(parts), mimetype='application/xml')
+
+
+@app.route('/robots.txt')
+def robots():
+    lines = [
+        'User-agent: *',
+        'Disallow: /chat/',
+        'Disallow: /forms',
+        'Disallow: /dashboard',
+        'Disallow: /settings',
+        'Disallow: /billing/',
+        'Disallow: /invite/',
+        f'Sitemap: {external_url("sitemap")}',
+    ]
+    return Response('\n'.join(lines) + '\n', mimetype='text/plain')
 
 @app.route('/dashboard')
 def dashboard():
@@ -2287,205 +2438,6 @@ def stripe_webhook():
                     deactivate_user_by_subscription(cursor, subscription_id, client_id, customer_id)
 
     return '', 200
-
-
-# ---------------------------------------------------------------------------
-# Public marketing blog (SEO landing pages for Bristol web design searches)
-# ---------------------------------------------------------------------------
-
-def _human_date(iso_date):
-    """Turn '2026-06-16' into '16 June 2026' for display."""
-    try:
-        return datetime.strptime(iso_date, '%Y-%m-%d').strftime('%-d %B %Y')
-    except (ValueError, TypeError):
-        return iso_date
-
-
-def _decorate_article(article):
-    """Return a copy of an article dict with display-ready fields added."""
-    enriched = dict(article)
-    enriched['published_human'] = _human_date(article['published'])
-    enriched['updated_human'] = _human_date(article['updated'])
-    enriched['author'] = 'Pixiware'
-    return enriched
-
-
-def _publisher_node():
-    return {
-        '@type': 'Organization',
-        'name': 'Pixiware',
-        'url': external_url('blog_index'),
-        'areaServed': {'@type': 'City', 'name': 'Bristol'},
-    }
-
-
-def _article_jsonld(article, canonical_url):
-    """Build BlogPosting + BreadcrumbList + FAQPage JSON-LD for an article."""
-    blog_posting = {
-        '@context': 'https://schema.org',
-        '@type': 'BlogPosting',
-        'headline': article['h1'],
-        'name': article['title'],
-        'description': article['meta_description'],
-        'keywords': article['keyword'],
-        'articleSection': article['category'],
-        'inLanguage': 'en-GB',
-        'datePublished': article['published'],
-        'dateModified': article['updated'],
-        'url': canonical_url,
-        'mainEntityOfPage': {'@type': 'WebPage', '@id': canonical_url},
-        'author': {'@type': 'Organization', 'name': 'Pixiware'},
-        'publisher': _publisher_node(),
-    }
-
-    breadcrumb = {
-        '@context': 'https://schema.org',
-        '@type': 'BreadcrumbList',
-        'itemListElement': [
-            {
-                '@type': 'ListItem',
-                'position': 1,
-                'name': 'Blog',
-                'item': external_url('blog_index'),
-            },
-            {
-                '@type': 'ListItem',
-                'position': 2,
-                'name': article['h1'],
-                'item': canonical_url,
-            },
-        ],
-    }
-
-    blocks = [blog_posting, breadcrumb]
-
-    if article.get('faqs'):
-        faq_page = {
-            '@context': 'https://schema.org',
-            '@type': 'FAQPage',
-            'mainEntity': [
-                {
-                    '@type': 'Question',
-                    'name': faq['q'],
-                    'acceptedAnswer': {'@type': 'Answer', 'text': faq['a']},
-                }
-                for faq in article['faqs']
-            ],
-        }
-        blocks.append(faq_page)
-
-    return [json.dumps(block, ensure_ascii=False) for block in blocks]
-
-
-@app.route('/blog')
-def blog_index():
-    articles = [_decorate_article(a) for a in ARTICLES]
-    canonical_url = external_url('blog_index')
-    blog_node = json.dumps(
-        {
-            '@context': 'https://schema.org',
-            '@type': 'Blog',
-            'name': BLOG_NAME,
-            'description': BLOG_DESCRIPTION,
-            'url': canonical_url,
-            'inLanguage': 'en-GB',
-            'publisher': _publisher_node(),
-            'blogPost': [
-                {
-                    '@type': 'BlogPosting',
-                    'headline': a['h1'],
-                    'url': external_url('blog_article', slug=a['slug']),
-                    'datePublished': a['published'],
-                    'keywords': a['keyword'],
-                }
-                for a in ARTICLES
-            ],
-        },
-        ensure_ascii=False,
-    )
-    return render_template(
-        'blog/index.html',
-        articles=articles,
-        page_title=f'{BLOG_NAME} — Web Design in Bristol',
-        meta_description=BLOG_DESCRIPTION,
-        og_title='The Pixiware Blog — Web Design in Bristol',
-        canonical_url=canonical_url,
-        jsonld=[blog_node],
-    )
-
-
-@app.route('/blog/<slug>')
-def blog_article(slug):
-    article = ARTICLES_BY_SLUG.get(slug)
-    if not article:
-        return render_template('blog/index.html',
-                               articles=[_decorate_article(a) for a in ARTICLES],
-                               page_title=f'{BLOG_NAME} — Web Design in Bristol',
-                               meta_description=BLOG_DESCRIPTION,
-                               canonical_url=external_url('blog_index'),
-                               jsonld=[]), 404
-
-    enriched = _decorate_article(article)
-    canonical_url = external_url('blog_article', slug=slug)
-    related = [
-        {'slug': a['slug'], 'h1': a['h1'], 'category': a['category']}
-        for a in ARTICLES
-        if a['slug'] != slug
-    ][:3]
-
-    return render_template(
-        f'blog/{slug}.html',
-        article=enriched,
-        related=related,
-        page_title=article['title'],
-        meta_description=article['meta_description'],
-        og_title=article['title'],
-        canonical_url=canonical_url,
-        jsonld=_article_jsonld(article, canonical_url),
-    )
-
-
-@app.route('/sitemap.xml')
-def sitemap_xml():
-    urls = [
-        {'loc': external_url('blog_index'), 'changefreq': 'weekly', 'priority': '0.8'},
-    ]
-    for a in ARTICLES:
-        urls.append({
-            'loc': external_url('blog_article', slug=a['slug']),
-            'lastmod': a['updated'],
-            'changefreq': 'monthly',
-            'priority': '0.7',
-        })
-
-    lines = ['<?xml version="1.0" encoding="UTF-8"?>',
-             '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">']
-    for url in urls:
-        lines.append('  <url>')
-        lines.append(f"    <loc>{url['loc']}</loc>")
-        if url.get('lastmod'):
-            lines.append(f"    <lastmod>{url['lastmod']}</lastmod>")
-        lines.append(f"    <changefreq>{url['changefreq']}</changefreq>")
-        lines.append(f"    <priority>{url['priority']}</priority>")
-        lines.append('  </url>')
-    lines.append('</urlset>')
-
-    return Response('\n'.join(lines), mimetype='application/xml')
-
-
-@app.route('/robots.txt')
-def robots_txt():
-    body = (
-        'User-agent: *\n'
-        'Allow: /blog\n'
-        'Disallow: /chat\n'
-        'Disallow: /settings\n'
-        'Disallow: /forms\n'
-        f'Sitemap: {external_url("sitemap_xml")}\n'
-    )
-    return Response(body, mimetype='text/plain')
-
-
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5001))
     app.run(host='0.0.0.0', port=port)

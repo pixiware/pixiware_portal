@@ -1,31 +1,48 @@
-{% extends "blog/base.html" %}
+{% extends 'blog/base.html' %}
 
-{% block main %}
-<section class="blog-hero">
-    <span class="blog-hero__eyebrow">The Pixiware Blog</span>
-    <h1 class="blog-hero__title">Web design in Bristol, explained</h1>
-    <p class="blog-hero__lede">
-        Straight-talking guides on what a website really costs, how to choose a
-        designer, and how to get a site that wins you customers in Bristol and
-        the South West.
-    </p>
+{% block title %}Web Design in Bristol — Guides & Advice | {{ business.name }}{% endblock %}
+{% block meta_description %}Practical, jargon-free guides on web design in Bristol — costs, choosing a designer, SEO, ecommerce and more, from the {{ business.name }} team.{% endblock %}
+
+{% block head_extra %}
+<link rel="canonical" href="{{ canonical }}">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Web Design in Bristol — Guides & Advice">
+<meta property="og:description" content="Practical, jargon-free guides on web design in Bristol — costs, choosing a designer, SEO, ecommerce and more.">
+<meta property="og:url" content="{{ canonical }}">
+<meta property="og:site_name" content="{{ business.name }}">
+<meta name="twitter:card" content="summary">
+{% if structured_data %}<script type="application/ld+json">{{ structured_data|safe }}</script>{% endif %}
+{% endblock %}
+
+{% block content %}
+<section class="blog_hero">
+    <div class="wrap">
+        <p class="eyebrow">The Pixiware Bristol web design blog</p>
+        <h1>Web design in Bristol, explained without the jargon</h1>
+        <p class="blog_hero__lede">Honest guides to getting a website that actually brings in work — what it costs, who to hire, and how to get found on Google here in Bristol.</p>
+    </div>
 </section>
 
-<section class="post-grid" aria-label="Latest articles">
-    {% for article in articles %}
-    <article class="post-card">
-        <a class="post-card__link" href="{{ url_for('blog_article', slug=article.slug) }}">
-            <span class="post-card__cat">{{ article.category }}</span>
-            <h2 class="post-card__title">{{ article.h1 }}</h2>
-            <p class="post-card__excerpt">{{ article.excerpt }}</p>
-            <div class="post-card__meta">
-                <time datetime="{{ article.published }}">{{ article.published_human }}</time>
-                <span aria-hidden="true">&middot;</span>
-                <span>{{ article.read_time }}</span>
-            </div>
-            <span class="post-card__more">Read guide &rarr;</span>
-        </a>
-    </article>
-    {% endfor %}
+<section class="wrap">
+    <ul class="post_grid">
+        {% for post in all_posts %}
+        <li class="post_card">
+            <a class="post_card__link" href="{{ url_for('blog_post', slug=post.slug) }}">
+                <span class="post_card__tag">{{ post.keyword|title }}</span>
+                <h2 class="post_card__title">{{ post.title }}</h2>
+                <p class="post_card__excerpt">{{ post.excerpt }}</p>
+                <span class="post_card__meta">{{ post.read_minutes }} min read</span>
+            </a>
+        </li>
+        {% endfor %}
+    </ul>
+</section>
+
+<section class="wrap">
+    <div class="cta_panel">
+        <h2>Ready to build something that ranks?</h2>
+        <p>Pixiware designs fast, findable websites for Bristol businesses — and gives you a private portal to manage the whole project.</p>
+        <a class="btn_gradient" href="{{ url_for('sign_up') }}">Start a project</a>
+    </div>
 </section>
 {% endblock %}

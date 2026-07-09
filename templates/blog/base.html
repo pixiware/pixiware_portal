@@ -1,86 +1,57 @@
-<!DOCTYPE html>
-<html lang="en-GB">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-    <meta name="theme-color" content="#10b981">
-
-    <title>{% block title %}{{ page_title }}{% endblock %} | Pixiware</title>
-    <meta name="description" content="{{ meta_description }}">
-    <link rel="canonical" href="{{ canonical_url }}">
-    <meta name="robots" content="index, follow, max-image-preview:large">
-
-    <!-- Local / geo targeting: Bristol, UK -->
-    <meta name="geo.region" content="GB-BST">
-    <meta name="geo.placename" content="Bristol">
-    <meta name="author" content="Pixiware">
-
-    <!-- Open Graph -->
-    <meta property="og:type" content="{% block og_type %}website{% endblock %}">
-    <meta property="og:site_name" content="Pixiware">
-    <meta property="og:locale" content="en_GB">
-    <meta property="og:title" content="{{ og_title | default(page_title) }}">
-    <meta property="og:description" content="{{ meta_description }}">
-    <meta property="og:url" content="{{ canonical_url }}">
-    {% block og_extra %}{% endblock %}
-
-    <!-- Twitter -->
-    <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:title" content="{{ og_title | default(page_title) }}">
-    <meta name="twitter:description" content="{{ meta_description }}">
-
-    <link rel="stylesheet" href="{{ url_for('static', filename='base_styles.css') }}">
-    <link rel="stylesheet" href="{{ asset('blog.css') }}">
-
-    {% for block in jsonld %}
-    <script type="application/ld+json">{{ block | safe }}</script>
-    {% endfor %}
-</head>
-<body class="blog-body">
-    <header class="blog-header">
-        <div class="blog-header__inner">
-            <a class="blog-brand" href="{{ url_for('blog_index') }}" aria-label="Pixiware blog home">
-                <span class="blog-brand__mark" aria-hidden="true"></span>
-                <span class="blog-brand__name">Pixiware</span>
-            </a>
-            <nav class="blog-nav" aria-label="Primary">
-                <a href="{{ url_for('blog_index') }}">Blog</a>
-                <a href="{{ url_for('sign_in') }}">Client login</a>
-                <a class="blog-nav__cta" href="{{ url_for('sign_up') }}">Start your project</a>
-            </nav>
-        </div>
-    </header>
-
-    <main class="blog-main">
-        {% block main %}{% endblock %}
-    </main>
-
-    <section class="blog-cta">
-        <div class="blog-cta__inner">
-            <h2>Planning a web design project in Bristol?</h2>
-            <p>
-                Pixiware designs fast, modern websites for Bristol businesses — and
-                gives every client a private portal to track the whole project.
-                Tell us what you need and we'll come back with honest advice and a
-                clear quote.
-            </p>
-            <a class="blog-cta__button" href="{{ url_for('sign_up') }}">Start your project</a>
-        </div>
-    </section>
-
-    <footer class="blog-footer">
-        <div class="blog-footer__inner">
-            <div class="blog-footer__brand">
-                <span class="blog-brand__mark" aria-hidden="true"></span>
-                <span>Pixiware</span>
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+        <meta name="theme-color" content="#10b981">
+        <title>{% block title %}{{ business.name }}{% endblock %}</title>
+        <meta name="description" content="{% block meta_description %}{{ business.tagline }}{% endblock %}">
+        {% block head_extra %}{% endblock %}
+        <link rel="stylesheet" href="{{ url_for('static', filename='base_styles.css') }}">
+        <link rel="stylesheet" href="{{ url_for('static', filename='blog.css') }}">
+    </head>
+    <body class="blog-body">
+        <header class="site_header">
+            <div class="site_header__inner">
+                <a class="brand_wordmark" href="{{ url_for('blog_index') }}" aria-label="{{ business.name }} home">{{ business.logo_text }}</a>
+                <nav class="site_nav" aria-label="Primary">
+                    <a href="{{ url_for('blog_index') }}">Blog</a>
+                    <a href="{{ url_for('sign_in') }}">Client Portal</a>
+                    <a class="site_nav__cta" href="{{ url_for('sign_up') }}">Start a project</a>
+                </nav>
             </div>
-            <p class="blog-footer__tag">Web design &amp; build for Bristol businesses.</p>
-            <nav class="blog-footer__links" aria-label="Footer">
-                <a href="{{ url_for('blog_index') }}">Blog</a>
-                <a href="{{ url_for('sign_in') }}">Client login</a>
-                <a href="{{ url_for('sign_up') }}">Start a project</a>
-            </nav>
-        </div>
-    </footer>
-</body>
+        </header>
+
+        <main class="site_main">
+            {% block content %}{% endblock %}
+        </main>
+
+        <footer class="site_footer">
+            <div class="site_footer__inner">
+                <div class="site_footer__brand">
+                    <span class="brand_wordmark brand_wordmark--sm">{{ business.logo_text }}</span>
+                    <p>{{ business.tagline }}. Serving {{ business.area }}.</p>
+                </div>
+                <div class="site_footer__col">
+                    <h2>Guides</h2>
+                    <ul>
+                        {% for post in all_posts %}
+                        <li><a href="{{ url_for('blog_post', slug=post.slug) }}">{{ post.keyword|title }}</a></li>
+                        {% endfor %}
+                    </ul>
+                </div>
+                <div class="site_footer__col">
+                    <h2>Pixiware</h2>
+                    <ul>
+                        <li><a href="{{ url_for('blog_index') }}">All guides</a></li>
+                        <li><a href="{{ url_for('sign_in') }}">Client portal</a></li>
+                        <li><a href="{{ url_for('sign_up') }}">Start a project</a></li>
+                    </ul>
+                </div>
+            </div>
+            <div class="site_footer__legal">
+                <p>&copy; {{ current_year }} {{ business.name }}. Web design for Bristol businesses.</p>
+            </div>
+        </footer>
+    </body>
 </html>

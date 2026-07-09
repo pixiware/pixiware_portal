@@ -1,0 +1,79 @@
+{% extends 'blog/base.html' %}
+
+{% block title %}{{ post.title }} | {{ business.name }}{% endblock %}
+{% block meta_description %}{{ post.meta_description }}{% endblock %}
+
+{% block head_extra %}
+<link rel="canonical" href="{{ canonical }}">
+<meta property="og:type" content="article">
+<meta property="og:title" content="{{ post.title }}">
+<meta property="og:description" content="{{ post.meta_description }}">
+<meta property="og:url" content="{{ canonical }}">
+<meta property="og:site_name" content="{{ business.name }}">
+<meta property="article:published_time" content="{{ post.published }}">
+<meta property="article:modified_time" content="{{ post.updated }}">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="{{ post.title }}">
+<meta name="twitter:description" content="{{ post.meta_description }}">
+{% if structured_data %}<script type="application/ld+json">{{ structured_data|safe }}</script>{% endif %}
+{% endblock %}
+
+{% block content %}
+<article class="wrap article">
+    <nav class="breadcrumb" aria-label="Breadcrumb">
+        <a href="{{ url_for('blog_index') }}">Blog</a>
+        <span aria-hidden="true">/</span>
+        <span>{{ post.keyword|title }}</span>
+    </nav>
+
+    <header class="article__header">
+        <p class="eyebrow">{{ post.keyword|title }}</p>
+        <h1>{{ post.title }}</h1>
+        <p class="article__meta">
+            Updated {{ post.updated_display }} · {{ post.read_minutes }} min read
+        </p>
+    </header>
+
+    <div class="article__body">
+        {% for para in post.intro %}
+        <p class="article__lede">{{ para }}</p>
+        {% endfor %}
+
+        {% for section in post.sections %}
+        <h2>{{ section.h2 }}</h2>
+        {{ section.body|safe }}
+        {% endfor %}
+
+        <div class="cta_inline">
+            <h2>Want this done for you?</h2>
+            <p>Pixiware builds fast, search-friendly websites for Bristol businesses. Start a project and manage it all from your own private portal.</p>
+            <a class="btn_gradient" href="{{ url_for('sign_up') }}">Start a project</a>
+        </div>
+
+        <section class="faq" aria-labelledby="faq-heading">
+            <h2 id="faq-heading">Frequently asked questions</h2>
+            {% for item in post.faqs %}
+            <details class="faq__item"{% if loop.first %} open{% endif %}>
+                <summary>{{ item.q }}</summary>
+                <p>{{ item.a }}</p>
+            </details>
+            {% endfor %}
+        </section>
+    </div>
+</article>
+
+<aside class="wrap related" aria-labelledby="related-heading">
+    <h2 id="related-heading">Keep reading</h2>
+    <ul class="post_grid post_grid--related">
+        {% for rel in related_posts %}
+        <li class="post_card">
+            <a class="post_card__link" href="{{ url_for('blog_post', slug=rel.slug) }}">
+                <span class="post_card__tag">{{ rel.keyword|title }}</span>
+                <h3 class="post_card__title">{{ rel.title }}</h3>
+                <span class="post_card__meta">{{ rel.read_minutes }} min read</span>
+            </a>
+        </li>
+        {% endfor %}
+    </ul>
+</aside>
+{% endblock %}
