@@ -14,8 +14,6 @@ from werkzeug.utils import secure_filename
 from werkzeug.middleware.proxy_fix import ProxyFix
 import stripe
 
-import blog_content
-
 ATTACHMENTS_BUCKET = 'message_attatchments'
 VAULT_BUCKET = 'vault_documents'
 MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
@@ -402,6 +400,22 @@ def delete_vault_object(path):
     if not supabase_url or not service_key or not path:
         return
     delete_url = f'{supabase_url}/storage/v1/object/{VAULT_BUCKET}/{quote(path, safe="/")}'
+    req = Request(
+        delete_url,
+        method='DELETE',
+        headers={'Authorization': f'Bearer {service_key}', 'apikey': service_key},
+    )
+    try:
+        with urlopen(req) as response:
+            response.read()
+    except HTTPError:
+        pass
+
+def delete_attachment_object(path):
+    supabase_url, service_key = get_supabase_config()
+    if not supabase_url or not service_key or not path:
+        return
+    delete_url = f'{supabase_url}/storage/v1/object/{ATTACHMENTS_BUCKET}/{quote(path, safe="/")}'
     req = Request(
         delete_url,
         method='DELETE',
@@ -983,128 +997,11 @@ def index():
     return render_template('sign-in.html')
 
 
-# ---------------------------------------------------------------------------
-# Public marketing blog (SEO landing pages for Bristol web design searches)
-# ---------------------------------------------------------------------------
-
-def _format_blog_date(iso_date):
-    try:
-        return datetime.strptime(iso_date, '%Y-%m-%d').strftime('%-d %B %Y')
-    except (ValueError, TypeError):
-        return iso_date
-
-
-def _blog_common_context():
-    return {
-        'business': blog_content.BUSINESS,
-        'all_posts': blog_content.posts_for_index(),
-        'current_year': datetime.now(timezone.utc).year,
-    }
-
-
-def _blog_index_structured_data(canonical):
-    data = {
-        '@context': 'https://schema.org',
-        '@type': 'Blog',
-        'name': f"{blog_content.BUSINESS['name']} — Bristol web design blog",
-        'url': canonical,
-        'publisher': {'@type': 'Organization', 'name': blog_content.BUSINESS['name']},
-        'blogPost': [
-            {
-                '@type': 'BlogPosting',
-                'headline': post['title'],
-                'description': post['meta_description'],
-                'url': external_url('blog_post', slug=post['slug']),
-                'datePublished': post['published'],
-                'dateModified': post['updated'],
-            }
-            for post in blog_content.posts_for_index()
-        ],
-    }
-    return json.dumps(data)
-
-
-def _blog_post_structured_data(post, canonical):
-    article = {
-        '@type': 'BlogPosting',
-        'headline': post['title'],
-        'description': post['meta_description'],
-        'keywords': post['keyword'],
-        'datePublished': post['published'],
-        'dateModified': post['updated'],
-        'url': canonical,
-        'mainEntityOfPage': {'@type': 'WebPage', '@id': canonical},
-        'author': {'@type': 'Organization', 'name': blog_content.BUSINESS['name']},
-        'publisher': {'@type': 'Organization', 'name': blog_content.BUSINESS['name']},
-        'articleSection': 'Web design Bristol',
-    }
-    breadcrumb = {
-        '@type': 'BreadcrumbList',
-        'itemListElement': [
-            {
-                '@type': 'ListItem',
-                'position': 1,
-                'name': 'Blog',
-                'item': external_url('blog_index'),
-            },
-            {
-                '@type': 'ListItem',
-                'position': 2,
-                'name': post['keyword'].title(),
-                'item': canonical,
-            },
-        ],
-    }
-    faq = {
-        '@type': 'FAQPage',
-        'mainEntity': [
-            {
-                '@type': 'Question',
-                'name': item['q'],
-                'acceptedAnswer': {'@type': 'Answer', 'text': item['a']},
-            }
-            for item in post['faqs']
-        ],
-    }
-    return json.dumps({'@context': 'https://schema.org', '@graph': [article, breadcrumb, faq]})
-
-
-@app.route('/blog')
-def blog_index():
-    canonical = external_url('blog_index')
-    return render_template(
-        'blog/index.html',
-        canonical=canonical,
-        structured_data=_blog_index_structured_data(canonical),
-        **_blog_common_context(),
-    )
-
-
-@app.route('/blog/<slug>')
-def blog_post(slug):
-    post = blog_content.get_post(slug)
-    if not post:
-        abort(404)
-    canonical = external_url('blog_post', slug=slug)
-    post_view = dict(post, updated_display=_format_blog_date(post['updated']))
-    return render_template(
-        'blog/post.html',
-        post=post_view,
-        canonical=canonical,
-        related_posts=blog_content.get_related_posts(post),
-        structured_data=_blog_post_structured_data(post, canonical),
-        **_blog_common_context(),
-    )
-
-
 @app.route('/sitemap.xml')
 def sitemap():
     urls = [
         (external_url('index'), None, '1.0'),
-        (external_url('blog_index'), blog_content._UPDATED, '0.9'),
     ]
-    for post in blog_content.posts_for_index():
-        urls.append((external_url('blog_post', slug=post['slug']), post['updated'], '0.8'))
 
     parts = ['<?xml version="1.0" encoding="UTF-8"?>',
              '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">']
@@ -1547,6 +1444,45 @@ def chat_send(chat_id):
             clear_user_typing(cursor, user_id)
 
     return jsonify({'ok': True, 'id': message_id})
+
+@app.route('/chat/<int:chat_id>/message/<int:message_id>/delete', methods=['POST'])
+def chat_message_delete(chat_id, message_id):
+    user_id = session.get('user_id')
+    if not user_id:
+        return jsonify({'error': 'unauthorized'}), 401
+
+    attachment_paths = []
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            if not can_message(user_id, chat_id, cursor):
+                return jsonify({'error': 'forbidden'}), 403
+
+            cursor.execute(
+                "SELECT sender_id, receiver_id, COALESCE(attachments, '[]'::jsonb) "
+                'FROM public.messages WHERE id = %s',
+                (message_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return jsonify({'error': 'not found'}), 404
+
+            sender_id, receiver_id, attachments = row
+            # You may only delete your own messages, and only within this chat.
+            if sender_id != user_id or receiver_id != chat_id:
+                return jsonify({'error': 'forbidden'}), 403
+
+            for attachment in parse_attachments(attachments):
+                path = attachment.get('path') if isinstance(attachment, dict) else None
+                if path:
+                    attachment_paths.append(path)
+
+            # A form message owns a submission row keyed by message_id; clear it first.
+            cursor.execute('DELETE FROM public.form_submissions WHERE message_id = %s', (message_id,))
+            cursor.execute('DELETE FROM public.messages WHERE id = %s', (message_id,))
+
+    for path in attachment_paths:
+        delete_attachment_object(path)
+    return jsonify({'ok': True})
 
 @app.route('/chat/<int:chat_id>/site-url', methods=['POST'])
 def save_site_url(chat_id):

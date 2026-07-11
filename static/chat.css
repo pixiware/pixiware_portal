@@ -204,6 +204,55 @@ body:has(.chat_header) .chat_workspace {
     margin-left: auto;
     background: linear-gradient(135deg, rgba(163, 230, 53, 0.12), rgba(6, 182, 212, 0.1));
     border-color: rgba(16, 185, 129, 0.25);
+    position: relative;
+}
+
+/* Delete control on your own messages and forms. */
+.conversation_item__delete {
+    position: absolute;
+    top: 50%;
+    left: -2.15rem;
+    transform: translateY(-50%);
+    width: 1.75rem;
+    height: 1.75rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border: 1px solid var(--color-border);
+    border-radius: 50%;
+    background: var(--color-surface);
+    color: var(--color-text-muted);
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.conversation_item--you:hover .conversation_item__delete,
+.conversation_item__delete:focus-visible {
+    opacity: 1;
+}
+
+.conversation_item__delete:hover {
+    color: #dc2626;
+    border-color: #dc2626;
+}
+
+.conversation_item__delete svg {
+    width: 0.9rem;
+    height: 0.9rem;
+}
+
+.conversation_item--deleting {
+    opacity: 0.45;
+    pointer-events: none;
+}
+
+/* On touch devices there is no hover, so keep the control visible. */
+@media (hover: none) {
+    .conversation_item__delete {
+        opacity: 0.65;
+    }
 }
 
 .conversation_item_sender {

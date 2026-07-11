@@ -323,6 +323,15 @@
                     emptyState.remove();
                 }
 
+                // Drop any messages that no longer exist server-side (deleted by
+                // either party) so removals sync in on the next poll.
+                const currentIds = new Set(messages.map((message) => String(message.id)));
+                [...messagesEl.querySelectorAll('[data-message-id]')].forEach((el) => {
+                    if (!currentIds.has(el.dataset.messageId)) {
+                        el.remove();
+                    }
+                });
+
                 const existingIds = new Set(
                     [...messagesEl.querySelectorAll('[data-message-id]')].map((el) => el.dataset.messageId)
                 );
@@ -340,11 +349,73 @@
                 }
 
                 lastFingerprint = fingerprint;
+                decorateDeletable();
 
                 if (stickToBottom) {
                     messagesEl.scrollTop = messagesEl.scrollHeight;
                 }
             }
+
+            // Add a delete affordance to every message you sent (plain or form).
+            // Idempotent: safe to call after any render or card rebuild.
+            function decorateDeletable() {
+                messagesEl.querySelectorAll('.conversation_item--you[data-message-id]').forEach((el) => {
+                    if (el.querySelector(':scope > .conversation_item__delete')) {
+                        return;
+                    }
+                    const btn = document.createElement('button');
+                    btn.type = 'button';
+                    btn.className = 'conversation_item__delete';
+                    btn.setAttribute('aria-label', 'Delete');
+                    btn.title = 'Delete';
+                    btn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" d="M3 4.5h10M6.5 4.5V3.2a.7.7 0 0 1 .7-.7h1.6a.7.7 0 0 1 .7.7v1.3M5 4.5l.5 8a.9.9 0 0 0 .9.8h3.2a.9.9 0 0 0 .9-.8l.5-8"/></svg>';
+                    el.appendChild(btn);
+                });
+            }
+
+            async function deleteMessage(item) {
+                const messageId = item.dataset.messageId;
+                if (!messageId) {
+                    return;
+                }
+                const isForm = item.classList.contains('conversation_item--form');
+                const prompt = isForm
+                    ? 'Delete this form? It will be removed for both of you, along with any response.'
+                    : 'Delete this message? It will be removed for both of you.';
+                if (!window.confirm(prompt)) {
+                    return;
+                }
+                item.classList.add('conversation_item--deleting');
+                try {
+                    const response = await fetch(`/chat/${chatId}/message/${messageId}/delete`, { method: 'POST' });
+                    const data = await response.json().catch(() => ({}));
+                    if (!response.ok) {
+                        throw new Error(data.error || 'Could not delete');
+                    }
+                    item.remove();
+                    lastFingerprint = getFingerprintFromDom();
+                    if (!messagesEl.querySelector('[data-message-id]')) {
+                        messagesEl.innerHTML = '<p class="messages_empty">No messages yet.</p>';
+                        lastFingerprint = '';
+                    }
+                    loadMessages(false);
+                } catch (error) {
+                    item.classList.remove('conversation_item--deleting');
+                    window.alert(error.message);
+                }
+            }
+
+            messagesEl.addEventListener('click', (event) => {
+                const btn = event.target.closest('.conversation_item__delete');
+                if (!btn) {
+                    return;
+                }
+                event.preventDefault();
+                const item = btn.closest('[data-message-id]');
+                if (item) {
+                    deleteMessage(item);
+                }
+            });
 
             function escapeHtml(text) {
                 return text
@@ -474,6 +545,7 @@
                         el.replaceWith(window.PixiForms.chatCard(message));
                     }
                 });
+                decorateDeletable();
             }
 
             function renderPresence({ online, typing }) {
@@ -724,6 +796,9 @@
                 messagesEl.scrollTop = messagesEl.scrollHeight;
             }
             scrollMessagesToBottom();
+            // Decorate server-rendered messages once forms.js has hydrated form cards.
+            decorateDeletable();
+            window.addEventListener('load', decorateDeletable);
             // Re-pin to the bottom once images/attachments have loaded and changed the height.
             window.addEventListener('load', scrollMessagesToBottom);
             messagesEl.querySelectorAll('img').forEach((img) => {
