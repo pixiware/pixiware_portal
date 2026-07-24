@@ -22,8 +22,11 @@ import base64
 import hashlib
 import json
 import secrets
+import urllib.request
+import urllib.error
 from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
+from urllib.parse import quote
 
 from flask import Blueprint, request, jsonify, Response, redirect, render_template_string
 
@@ -690,6 +693,45 @@ class ToolError(Exception):
     pass
 
 
+def _vault_signed_url(storage_path, expires=3600):
+    """Time-limited Supabase download URL for a vault object, or None."""
+    if not storage_path:
+        return None
+    supa_url, key = portal.get_supabase_config()
+    if not supa_url or not key:
+        return None
+    endpoint = f'{supa_url}/storage/v1/object/sign/{portal.VAULT_BUCKET}/{quote(storage_path, safe="/")}'
+    body = json.dumps({'expiresIn': expires}).encode()
+    req = urllib.request.Request(
+        endpoint, data=body, method='POST',
+        headers={'Authorization': f'Bearer {key}', 'apikey': key, 'Content-Type': 'application/json'},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = json.loads(r.read())
+    except Exception:
+        return None
+    signed = data.get('signedURL') or data.get('signedUrl')
+    if not signed:
+        return None
+    if signed.startswith('http'):
+        return signed
+    if signed.startswith('/storage/'):
+        return f'{supa_url}{signed}'
+    return f'{supa_url}/storage/v1{signed}'
+
+
+def _parse_date(raw):
+    """Return a date for 'YYYY-MM-DD', None for empty (clear), or raise ToolError."""
+    raw = (raw or '').strip()
+    if not raw:
+        return None
+    try:
+        return datetime.strptime(raw, '%Y-%m-%d').date()
+    except ValueError:
+        raise ToolError('delivery_date must be YYYY-MM-DD (or empty to clear)')
+
+
 def _serialize_attachments(raw):
     out = []
     for att in portal.parse_attachments(raw):
@@ -828,15 +870,16 @@ def tool_get_messages(cur, agency_id, args):
 def tool_get_vault(cur, agency_id, args):
     client_id = _need_int(args, 'client_id')
     _require_client(cur, agency_id, client_id)
+    include_urls = args.get('include_urls', True)
     cur.execute(
-        '''SELECT id, parent_id, kind, name, mime, size_bytes, created_at
+        '''SELECT id, parent_id, kind, name, mime, size_bytes, storage_path, created_at
            FROM public.vault_items
            WHERE client_id = %s
            ORDER BY created_at ASC''',
         (client_id,),
     )
     items = []
-    for iid, parent, kind, name, mime, size, created in cur.fetchall():
+    for iid, parent, kind, name, mime, size, storage_path, created in cur.fetchall():
         item = {
             'id': iid,
             'parent_id': parent,
@@ -847,6 +890,7 @@ def tool_get_vault(cur, agency_id, args):
         if kind == 'file':
             item['mime'] = mime
             item['size'] = size
+            item['download_url'] = _vault_signed_url(storage_path) if include_urls else None
         items.append(item)
     return {
         'client_id': client_id,
@@ -1016,6 +1060,210 @@ def tool_list_form_submissions(cur, agency_id, args):
     return {'count': len(subs), 'submissions': subs}
 
 
+# --------------------------------------------------------------------------- #
+# Write tools (all scoped to the agency's own clients)
+# --------------------------------------------------------------------------- #
+def _iframe_html(url):
+    safe = (url or '').replace('"', '%22')
+    return (f'<iframe src="{safe}" title="Client site" '
+            'style="width:100%;height:600px;border:0;border-radius:12px" '
+            'loading="lazy" referrerpolicy="no-referrer"></iframe>')
+
+
+def tool_send_message(cur, agency_id, args):
+    client_id = _need_int(args, 'client_id')
+    _require_client(cur, agency_id, client_id)
+    body = (args.get('body') or '').strip()
+    if not body:
+        raise ToolError('body is required')
+    cur.execute(
+        '''INSERT INTO public.messages (sender_id, receiver_id, created_at, body)
+           VALUES (%s, %s, %s, %s) RETURNING id''',
+        (agency_id, client_id, _now(), body),
+    )
+    mid = cur.fetchone()[0]
+    return {'ok': True, 'message_id': mid, 'client_id': client_id, 'body': body}
+
+
+def tool_delete_message(cur, agency_id, args):
+    message_id = _need_int(args, 'message_id')
+    cur.execute(
+        "SELECT sender_id, receiver_id, COALESCE(attachments, '[]'::jsonb) FROM public.messages WHERE id = %s",
+        (message_id,),
+    )
+    row = cur.fetchone()
+    if not row:
+        raise ToolError('Message not found')
+    sender_id, receiver_id, attachments = row
+    if sender_id != agency_id:
+        raise ToolError('You can only delete messages your agency sent')
+    _require_client(cur, agency_id, receiver_id)
+    paths = [a.get('path') for a in portal.parse_attachments(attachments)
+             if isinstance(a, dict) and a.get('path')]
+    cur.execute('DELETE FROM public.form_submissions WHERE message_id = %s', (message_id,))
+    cur.execute('DELETE FROM public.messages WHERE id = %s', (message_id,))
+    for p in paths:
+        portal.delete_attachment_object(p)
+    return {'ok': True, 'deleted_message_id': message_id}
+
+
+def tool_set_delivery_date(cur, agency_id, args):
+    client_id = _need_int(args, 'client_id')
+    _require_client(cur, agency_id, client_id)
+    date = _parse_date(args.get('delivery_date'))
+    cur.execute('UPDATE public.users SET delivery_date = %s WHERE id = %s', (date, client_id))
+    return {'ok': True, 'client_id': client_id, 'delivery_date': _iso(date)}
+
+
+def tool_set_progress(cur, agency_id, args):
+    client_id = _need_int(args, 'client_id')
+    _require_client(cur, agency_id, client_id)
+    if args.get('progress') is None:
+        raise ToolError('progress is required')
+    try:
+        progress = max(0, min(100, int(args['progress'])))
+    except (TypeError, ValueError):
+        raise ToolError('progress must be an integer 0-100')
+    cur.execute('UPDATE public.users SET progress = %s WHERE id = %s', (progress, client_id))
+    return {'ok': True, 'client_id': client_id, 'progress': progress}
+
+
+def tool_set_site_url(cur, agency_id, args):
+    client_id = _need_int(args, 'client_id')
+    _require_client(cur, agency_id, client_id)
+    url = portal.normalize_site_url(args.get('site_url') or '')
+    if not url:
+        raise ToolError('site_url is required')
+    cur.execute('UPDATE public.users SET site_url = %s WHERE id = %s', (url, client_id))
+    return {'ok': True, 'client_id': client_id, 'site_url': url, 'iframe': _iframe_html(url)}
+
+
+def tool_get_site_embed(cur, agency_id, args):
+    client_id = _need_int(args, 'client_id')
+    _require_client(cur, agency_id, client_id)
+    cur.execute('SELECT site_url FROM public.users WHERE id = %s', (client_id,))
+    row = cur.fetchone()
+    url = row[0] if row else None
+    return {'client_id': client_id, 'site_url': url, 'iframe': _iframe_html(url) if url else None}
+
+
+def tool_create_vault_folder(cur, agency_id, args):
+    client_id = _need_int(args, 'client_id')
+    _require_client(cur, agency_id, client_id)
+    name = (args.get('name') or 'New folder').strip()[:120] or 'New folder'
+    parent_id = args.get('parent_id')
+    if parent_id is not None:
+        parent_id = int(parent_id)
+    if not portal.vault_parent_ok(cur, parent_id, client_id):
+        raise ToolError('parent_id is not a folder in this vault')
+    x = float(args.get('x', 40)); y = float(args.get('y', 40))
+    cur.execute(
+        '''INSERT INTO public.vault_items (client_id, parent_id, kind, name, pos_x, pos_y, uploaded_by)
+           VALUES (%s, %s, 'folder', %s, %s, %s, %s) RETURNING id''',
+        (client_id, parent_id, name, x, y, agency_id),
+    )
+    fid = cur.fetchone()[0]
+    return {'ok': True, 'item': {'id': fid, 'client_id': client_id, 'parent_id': parent_id,
+                                 'kind': 'folder', 'name': name}}
+
+
+def tool_rename_vault_item(cur, agency_id, args):
+    client_id = _need_int(args, 'client_id')
+    _require_client(cur, agency_id, client_id)
+    item_id = _need_int(args, 'item_id')
+    name = (args.get('name') or '').strip()[:200]
+    if not name:
+        raise ToolError('name is required')
+    cur.execute('UPDATE public.vault_items SET name = %s, updated_at = now() WHERE id = %s AND client_id = %s',
+                (name, item_id, client_id))
+    if not cur.rowcount:
+        raise ToolError('Vault item not found')
+    return {'ok': True, 'item_id': item_id, 'name': name}
+
+
+def tool_move_vault_item(cur, agency_id, args):
+    client_id = _need_int(args, 'client_id')
+    _require_client(cur, agency_id, client_id)
+    item_id = _need_int(args, 'item_id')
+    cur.execute('SELECT kind FROM public.vault_items WHERE id = %s AND client_id = %s', (item_id, client_id))
+    if not cur.fetchone():
+        raise ToolError('Vault item not found')
+    sets, params = [], []
+    if 'parent_id' in args:
+        parent_id = args.get('parent_id')
+        parent_id = int(parent_id) if parent_id is not None else None
+        if parent_id == item_id:
+            raise ToolError('cannot nest an item into itself')
+        if not portal.vault_parent_ok(cur, parent_id, client_id):
+            raise ToolError('parent_id is not a folder in this vault')
+        if parent_id is not None:
+            cur.execute(
+                '''WITH RECURSIVE descendants AS (
+                       SELECT id FROM public.vault_items WHERE id = %s
+                       UNION ALL
+                       SELECT v.id FROM public.vault_items v JOIN descendants d ON v.parent_id = d.id)
+                   SELECT 1 FROM descendants WHERE id = %s''',
+                (item_id, parent_id),
+            )
+            if cur.fetchone():
+                raise ToolError('cannot move a folder into its own subfolder')
+        sets.append('parent_id = %s'); params.append(parent_id)
+    if args.get('x') is not None:
+        sets.append('pos_x = %s'); params.append(float(args['x']))
+    if args.get('y') is not None:
+        sets.append('pos_y = %s'); params.append(float(args['y']))
+    if not sets:
+        raise ToolError('provide parent_id and/or x,y to move the item')
+    sets.append('updated_at = now()')
+    params += [item_id, client_id]
+    cur.execute(f'UPDATE public.vault_items SET {", ".join(sets)} WHERE id = %s AND client_id = %s', params)
+    return {'ok': True, 'item_id': item_id}
+
+
+def tool_delete_vault_item(cur, agency_id, args):
+    client_id = _need_int(args, 'client_id')
+    _require_client(cur, agency_id, client_id)
+    item_id = _need_int(args, 'item_id')
+    cur.execute(
+        '''WITH RECURSIVE tree AS (
+               SELECT id, storage_path, kind FROM public.vault_items WHERE id = %s AND client_id = %s
+               UNION ALL
+               SELECT v.id, v.storage_path, v.kind FROM public.vault_items v JOIN tree t ON v.parent_id = t.id)
+           SELECT storage_path FROM tree WHERE kind = 'file' AND storage_path IS NOT NULL''',
+        (item_id, client_id),
+    )
+    paths = [r[0] for r in cur.fetchall()]
+    cur.execute('DELETE FROM public.vault_items WHERE id = %s AND client_id = %s', (item_id, client_id))
+    if not cur.rowcount:
+        raise ToolError('Vault item not found')
+    orphaned = []
+    for p in paths:
+        cur.execute('SELECT 1 FROM public.vault_items WHERE storage_path = %s LIMIT 1', (p,))
+        if not cur.fetchone():
+            orphaned.append(p)
+    for p in orphaned:
+        portal.delete_vault_object(p)
+    return {'ok': True, 'deleted_item_id': item_id, 'removed_files': len(orphaned)}
+
+
+def tool_send_form(cur, agency_id, args):
+    client_id = _need_int(args, 'client_id')
+    _require_client(cur, agency_id, client_id)
+    form_id = _need_int(args, 'form_id')
+    cur.execute("SELECT name FROM public.form_items WHERE id = %s AND agency_id = %s AND kind = 'form'",
+                (form_id, agency_id))
+    row = cur.fetchone()
+    if not row:
+        raise ToolError('Form not found or not owned by your agency')
+    cur.execute(
+        '''INSERT INTO public.messages (sender_id, receiver_id, created_at, body, form_item_id)
+           VALUES (%s, %s, %s, %s, %s) RETURNING id''',
+        (agency_id, client_id, _now(), f'Form: {row[0]}', form_id),
+    )
+    mid = cur.fetchone()[0]
+    return {'ok': True, 'message_id': mid, 'client_id': client_id, 'form_id': form_id, 'form_name': row[0]}
+
+
 # ---- tool helpers --------------------------------------------------------- #
 def _need_int(args, key):
     if key not in args or args[key] is None:
@@ -1100,11 +1348,14 @@ TOOLS = [
     },
     {
         'name': 'get_vault',
-        'description': "Read a client's PixiVault: all documents and folders, returned both as a flat list and a nested tree. Files include mime type and size.",
+        'description': "Read a client's PixiVault: all documents and folders, as a flat list and a nested tree. Each file includes its name, mime type, size, and a time-limited download_url (valid ~1 hour) so you can fetch the actual file contents.",
         'handler': tool_get_vault,
         'inputSchema': {
             'type': 'object',
-            'properties': {'client_id': {'type': 'integer', 'description': 'The client id.'}},
+            'properties': {
+                'client_id': {'type': 'integer', 'description': 'The client id.'},
+                'include_urls': {'type': 'boolean', 'description': 'Include signed download URLs for files (default true).'},
+            },
             'required': ['client_id'],
             'additionalProperties': False,
         },
@@ -1168,13 +1419,187 @@ TOOLS = [
             'additionalProperties': False,
         },
     },
+    {
+        'name': 'get_site_embed',
+        'description': "Get a client's website URL plus a ready-to-render <iframe> HTML snippet so the live site can be embedded directly in a chat or canvas.",
+        'handler': tool_get_site_embed,
+        'inputSchema': {
+            'type': 'object',
+            'properties': {'client_id': {'type': 'integer', 'description': 'The client id.'}},
+            'required': ['client_id'],
+            'additionalProperties': False,
+        },
+    },
+
+    # ---------- write tools ----------
+    {
+        'name': 'send_message',
+        'description': 'Send a chat message from the agency to a client. Returns the new message_id.',
+        'handler': tool_send_message,
+        'annotations': {'title': 'Send message', 'readOnlyHint': False, 'destructiveHint': False},
+        'inputSchema': {
+            'type': 'object',
+            'properties': {
+                'client_id': {'type': 'integer', 'description': 'The client to message.'},
+                'body': {'type': 'string', 'description': 'The message text.'},
+            },
+            'required': ['client_id', 'body'],
+            'additionalProperties': False,
+        },
+    },
+    {
+        'name': 'delete_message',
+        'description': 'Delete a message the agency sent (only messages sent by your agency to your clients can be deleted). Also removes its attachments and any form submission.',
+        'handler': tool_delete_message,
+        'annotations': {'title': 'Delete message', 'readOnlyHint': False, 'destructiveHint': True},
+        'inputSchema': {
+            'type': 'object',
+            'properties': {'message_id': {'type': 'integer', 'description': 'The message id (from get_messages).'}},
+            'required': ['message_id'],
+            'additionalProperties': False,
+        },
+    },
+    {
+        'name': 'set_delivery_date',
+        'description': "Set or clear a client's delivery date. Pass delivery_date as YYYY-MM-DD, or an empty string to clear it.",
+        'handler': tool_set_delivery_date,
+        'annotations': {'title': 'Set delivery date', 'readOnlyHint': False, 'destructiveHint': False, 'idempotentHint': True},
+        'inputSchema': {
+            'type': 'object',
+            'properties': {
+                'client_id': {'type': 'integer', 'description': 'The client id.'},
+                'delivery_date': {'type': 'string', 'description': 'YYYY-MM-DD, or empty string to clear.'},
+            },
+            'required': ['client_id', 'delivery_date'],
+            'additionalProperties': False,
+        },
+    },
+    {
+        'name': 'set_progress',
+        'description': "Set a client's build progress percentage (0-100).",
+        'handler': tool_set_progress,
+        'annotations': {'title': 'Set progress', 'readOnlyHint': False, 'destructiveHint': False, 'idempotentHint': True},
+        'inputSchema': {
+            'type': 'object',
+            'properties': {
+                'client_id': {'type': 'integer', 'description': 'The client id.'},
+                'progress': {'type': 'integer', 'description': 'Progress percent, 0-100.'},
+            },
+            'required': ['client_id', 'progress'],
+            'additionalProperties': False,
+        },
+    },
+    {
+        'name': 'set_site_url',
+        'description': "Set the client's website URL — this is the site shown in their portal and embedded via get_site_embed. Returns the normalized URL and a fresh iframe snippet.",
+        'handler': tool_set_site_url,
+        'annotations': {'title': 'Set site URL', 'readOnlyHint': False, 'destructiveHint': False, 'idempotentHint': True},
+        'inputSchema': {
+            'type': 'object',
+            'properties': {
+                'client_id': {'type': 'integer', 'description': 'The client id.'},
+                'site_url': {'type': 'string', 'description': "The website URL (https:// added if missing)."},
+            },
+            'required': ['client_id', 'site_url'],
+            'additionalProperties': False,
+        },
+    },
+    {
+        'name': 'create_vault_folder',
+        'description': "Create a folder in a client's PixiVault. Optionally nest it under a parent folder.",
+        'handler': tool_create_vault_folder,
+        'annotations': {'title': 'Create vault folder', 'readOnlyHint': False, 'destructiveHint': False},
+        'inputSchema': {
+            'type': 'object',
+            'properties': {
+                'client_id': {'type': 'integer', 'description': 'The client id.'},
+                'name': {'type': 'string', 'description': 'Folder name.'},
+                'parent_id': {'type': 'integer', 'description': 'Optional parent folder id.'},
+                'x': {'type': 'number', 'description': 'Optional canvas x position.'},
+                'y': {'type': 'number', 'description': 'Optional canvas y position.'},
+            },
+            'required': ['client_id', 'name'],
+            'additionalProperties': False,
+        },
+    },
+    {
+        'name': 'rename_vault_item',
+        'description': "Rename a file or folder in a client's PixiVault.",
+        'handler': tool_rename_vault_item,
+        'annotations': {'title': 'Rename vault item', 'readOnlyHint': False, 'destructiveHint': False, 'idempotentHint': True},
+        'inputSchema': {
+            'type': 'object',
+            'properties': {
+                'client_id': {'type': 'integer', 'description': 'The client id.'},
+                'item_id': {'type': 'integer', 'description': 'The vault item id.'},
+                'name': {'type': 'string', 'description': 'The new name.'},
+            },
+            'required': ['client_id', 'item_id', 'name'],
+            'additionalProperties': False,
+        },
+    },
+    {
+        'name': 'move_vault_item',
+        'description': "Move / arrange a vault item: change its parent folder (parent_id, or null for the root) and/or its canvas position (x, y). Prevents nesting a folder inside itself.",
+        'handler': tool_move_vault_item,
+        'annotations': {'title': 'Move vault item', 'readOnlyHint': False, 'destructiveHint': False},
+        'inputSchema': {
+            'type': 'object',
+            'properties': {
+                'client_id': {'type': 'integer', 'description': 'The client id.'},
+                'item_id': {'type': 'integer', 'description': 'The vault item id.'},
+                'parent_id': {'type': ['integer', 'null'], 'description': 'New parent folder id, or null for the root.'},
+                'x': {'type': 'number', 'description': 'Optional canvas x position.'},
+                'y': {'type': 'number', 'description': 'Optional canvas y position.'},
+            },
+            'required': ['client_id', 'item_id'],
+            'additionalProperties': False,
+        },
+    },
+    {
+        'name': 'delete_vault_item',
+        'description': "Delete a vault file or folder (folders delete their contents too). Removes the underlying stored files when nothing else references them.",
+        'handler': tool_delete_vault_item,
+        'annotations': {'title': 'Delete vault item', 'readOnlyHint': False, 'destructiveHint': True},
+        'inputSchema': {
+            'type': 'object',
+            'properties': {
+                'client_id': {'type': 'integer', 'description': 'The client id.'},
+                'item_id': {'type': 'integer', 'description': 'The vault item id.'},
+            },
+            'required': ['client_id', 'item_id'],
+            'additionalProperties': False,
+        },
+    },
+    {
+        'name': 'send_form',
+        'description': 'Send one of the agency\'s form templates to a client as a fillable form card in the chat. Use list_forms to find form_ids.',
+        'handler': tool_send_form,
+        'annotations': {'title': 'Send form', 'readOnlyHint': False, 'destructiveHint': False},
+        'inputSchema': {
+            'type': 'object',
+            'properties': {
+                'client_id': {'type': 'integer', 'description': 'The client to send the form to.'},
+                'form_id': {'type': 'integer', 'description': 'The form template id (from list_forms).'},
+            },
+            'required': ['client_id', 'form_id'],
+            'additionalProperties': False,
+        },
+    },
 ]
+
+# Mark every remaining (read) tool as read-only for clients that surface hints.
+for _t in TOOLS:
+    _t.setdefault('annotations', {'readOnlyHint': True})
 
 TOOLS_BY_NAME = {t['name']: t for t in TOOLS}
 
 
 def _public_tool(t):
-    return {'name': t['name'], 'description': t['description'], 'inputSchema': t['inputSchema']}
+    pub = {'name': t['name'], 'description': t['description'], 'inputSchema': t['inputSchema']}
+    if t.get('annotations'):
+        pub['annotations'] = t['annotations']
+    return pub
 
 
 # --------------------------------------------------------------------------- #
@@ -1204,10 +1629,15 @@ def _handle_rpc(message, agency_id):
             'capabilities': {'tools': {'listChanged': False}},
             'serverInfo': {'name': SERVER_NAME, 'version': SERVER_VERSION},
             'instructions': (
-                'Read-only access to a Pixiware agency. Start with whoami and '
-                'list_clients to discover client_ids, then use get_client, '
-                'get_messages, get_vault, list_delivery_dates, get_form_submissions '
-                'and search_messages. Every tool is automatically scoped to your agency.'
+                'Full access to a Pixiware agency, scoped automatically to your own clients. '
+                'Start with whoami and list_clients to discover client_ids. '
+                'Read: get_client, get_messages, get_vault (files include a download_url), '
+                'list_delivery_dates, get_form_submissions, search_messages, list_forms, '
+                'get_form, list_form_submissions, get_site_embed (returns an iframe for chat). '
+                'Write: send_message, delete_message, set_delivery_date, set_progress, '
+                'set_site_url, create_vault_folder, rename_vault_item, move_vault_item, '
+                'delete_vault_item, send_form. Delete and set_* tools change live client data — '
+                'confirm intent before calling them.'
             ),
         })
 
