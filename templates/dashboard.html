@@ -8,6 +8,30 @@
         <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}">
         <link rel="stylesheet" href="{{ url_for('static', filename='dashboard-bg/grainient.css') }}">
         <link rel="stylesheet" href="{{ url_for('static', filename='forms.css') }}">
+        <style>
+            .mcp_modal { position:fixed; inset:0; z-index:1000; display:flex;
+                         align-items:center; justify-content:center; padding:20px; }
+            .mcp_modal[hidden] { display:none; }
+            .mcp_modal__backdrop { position:absolute; inset:0; background:rgba(12,20,34,.55);
+                                   backdrop-filter:blur(2px); }
+            .mcp_modal__card { position:relative; z-index:1; background:#fff; width:100%;
+                               max-width:520px; border-radius:18px; padding:30px 30px 24px;
+                               box-shadow:0 24px 70px rgba(12,24,48,.28); max-height:90vh; overflow:auto; }
+            .mcp_modal__x { position:absolute; top:14px; right:16px; border:none; background:none;
+                            font-size:1.6rem; line-height:1; color:#8a95a3; cursor:pointer; }
+            .mcp_modal__card h2 { margin:0 0 6px; font-size:1.5rem; }
+            .mcp_modal__sub { margin:0 0 18px; color:#5b6673; font-size:.95rem; line-height:1.5; }
+            .mcp_modal__label { display:block; font-size:.72rem; font-weight:700; letter-spacing:.04em;
+                                text-transform:uppercase; color:#7a8593; margin-bottom:6px; }
+            .mcp_modal__url { display:flex; gap:8px; margin-bottom:20px; }
+            .mcp_modal__url input { flex:1; padding:12px 14px; border:1px solid #d5dbe2; border-radius:10px;
+                                    font-size:.9rem; background:#f6f9fc; color:#0b1220; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+            .mcp_modal__url button { padding:12px 18px; border:none; border-radius:10px; font-weight:700;
+                                     color:#fff; cursor:pointer; background:linear-gradient(135deg,#8bd34f,#37a3b0); }
+            .mcp_modal__steps { margin:0 0 14px; padding-left:1.2rem; color:#3a4552; font-size:.92rem; line-height:1.7; }
+            .mcp_modal__steps em { color:#2b7a86; font-style:normal; font-weight:600; }
+            .mcp_modal__foot { margin:0; font-size:.8rem; color:#95a0ad; }
+        </style>
     </head>
     <body>
         <header class="app_header">
@@ -20,6 +44,10 @@
             </div>
             {% if is_agency %}
             <div class="agency_actions">
+                <button type="button" class="agency_btn" id="mcp-connect-open">
+                    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 2a3 3 0 0 1 3 3v2a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3Z" stroke="currentColor" stroke-width="1.6"/><path d="M5 10a3 3 0 0 1 3 3M19 10a3 3 0 0 0-3 3M12 13v4M8 21h8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    Connect your AI
+                </button>
                 <a class="agency_btn" href="{{ url_for('forms_page') }}">
                     <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h7l4 4v14a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z" stroke="currentColor" stroke-width="1.6"/><path d="M14 3v4h4" stroke="currentColor" stroke-width="1.6"/><path d="M12 11v6M9 14h6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
                     Form Builder
@@ -37,6 +65,34 @@
             </div>
             {% endif %}
         </header>
+
+        {% if is_agency %}
+        <div class="mcp_modal" id="mcp-modal" hidden>
+            <div class="mcp_modal__backdrop" data-mcp-close></div>
+            <div class="mcp_modal__card" role="dialog" aria-modal="true" aria-labelledby="mcp-modal-title">
+                <button type="button" class="mcp_modal__x" data-mcp-close aria-label="Close">&times;</button>
+                <h2 id="mcp-modal-title">Connect your AI</h2>
+                <p class="mcp_modal__sub">
+                    Give Claude or ChatGPT <strong>read-only</strong> access to your portal —
+                    your clients, chats, PixiVault, delivery dates and forms.
+                </p>
+
+                <label class="mcp_modal__label">Your MCP server URL</label>
+                <div class="mcp_modal__url">
+                    <input type="text" id="mcp-modal-url" readonly value="{{ mcp_url }}">
+                    <button type="button" id="mcp-modal-copy">Copy</button>
+                </div>
+
+                <ol class="mcp_modal__steps">
+                    <li><strong>Claude:</strong> Settings → Connectors → <em>Add custom connector</em>, paste the URL.</li>
+                    <li><strong>ChatGPT:</strong> Settings → Connectors → <em>Add</em> an MCP server, paste the URL.</li>
+                    <li>A Pixiware approval page opens — sign in with this agency account.</li>
+                    <li>Ask your AI things like <em>“list my clients and their delivery dates”</em> or <em>“show the latest form submissions.”</em></li>
+                </ol>
+                <p class="mcp_modal__foot">The assistant can read your data but can never send messages or change anything.</p>
+            </div>
+        </div>
+        {% endif %}
 
         <div class="chat_container">
             <div class="chat_list">
@@ -173,6 +229,34 @@
                             btn.disabled = false;
                         }
                     });
+                });
+            })();
+        </script>
+        <script>
+            (function () {
+                const modal = document.getElementById('mcp-modal');
+                const openBtn = document.getElementById('mcp-connect-open');
+                if (!modal || !openBtn) return;
+
+                const open = () => { modal.hidden = false; };
+                const close = () => { modal.hidden = true; };
+
+                openBtn.addEventListener('click', open);
+                modal.querySelectorAll('[data-mcp-close]').forEach((el) => el.addEventListener('click', close));
+                document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !modal.hidden) close(); });
+
+                const copyBtn = document.getElementById('mcp-modal-copy');
+                copyBtn.addEventListener('click', async () => {
+                    const input = document.getElementById('mcp-modal-url');
+                    try {
+                        await navigator.clipboard.writeText(input.value);
+                    } catch (e) {
+                        input.select();
+                        document.execCommand('copy');
+                    }
+                    const original = copyBtn.textContent;
+                    copyBtn.textContent = 'Copied!';
+                    setTimeout(() => { copyBtn.textContent = original; }, 1500);
                 });
             })();
         </script>

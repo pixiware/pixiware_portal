@@ -22,6 +22,7 @@
         <main class="settings_layout">
             <nav class="settings_nav" aria-label="Settings sections">
                 <button type="button" class="settings_nav__item settings_nav__item--active" data-panel="account">Account</button>
+                {% if is_agency %}<button type="button" class="settings_nav__item" data-panel="connect">Connect AI</button>{% endif %}
                 <button type="button" class="settings_nav__item" data-panel="pricing">Pricing</button>
             </nav>
 
@@ -34,6 +35,33 @@
                     </p>
                     <a class="settings_logout" href="{{ url_for('logout') }}">Log out</a>
                 </section>
+
+                {% if is_agency %}
+                <section class="settings_section settings_panel-view" id="panel-connect" hidden>
+                    <h2>Connect AI</h2>
+                    <p class="settings_section__hint">
+                        Give an AI assistant <strong>read-only</strong> access to your agency data.
+                        Paste the URL below into Claude or ChatGPT as a custom connector / MCP server.
+                        You'll sign in once to approve; the assistant can then read your clients,
+                        chats, PixiVault, delivery dates and form submissions — but can't change anything.
+                    </p>
+                    <div class="mcp_url_row" style="display:flex;gap:8px;margin:16px 0;">
+                        <input id="mcp-url" type="text" readonly value="{{ mcp_url }}"
+                               style="flex:1;padding:12px 14px;border:1px solid #d5dbe2;border-radius:10px;font-size:.95rem;background:#f8fafc;">
+                        <button type="button" id="mcp-copy"
+                                style="padding:12px 18px;border:none;border-radius:10px;background:linear-gradient(135deg,#8bd34f,#37a3b0);color:#fff;font-weight:700;cursor:pointer;">Copy</button>
+                    </div>
+                    <details style="margin-top:6px;">
+                        <summary style="cursor:pointer;font-weight:600;color:#3a4552;">How to connect</summary>
+                        <ol style="color:#5b6673;font-size:.9rem;line-height:1.6;padding-left:1.2rem;">
+                            <li>In Claude or ChatGPT, add a new custom connector / MCP server.</li>
+                            <li>Paste the URL above and continue.</li>
+                            <li>A Pixiware approval page opens — sign in with this agency account.</li>
+                            <li>The assistant can now read your portal data on request.</li>
+                        </ol>
+                    </details>
+                </section>
+                {% endif %}
 
                 <section class="settings_section settings_panel-view" id="panel-pricing" hidden>
                     <div class="pricing_current">
@@ -146,6 +174,23 @@
             if (cancelBtn) {
                 cancelBtn.addEventListener('click', () => {
                     startBillingRedirect(cancelBtn, cancelError, '{{ url_for("billing_cancel") }}');
+                });
+            }
+        </script>
+        <script>
+            const mcpCopyBtn = document.getElementById('mcp-copy');
+            if (mcpCopyBtn) {
+                mcpCopyBtn.addEventListener('click', async () => {
+                    const input = document.getElementById('mcp-url');
+                    try {
+                        await navigator.clipboard.writeText(input.value);
+                    } catch (e) {
+                        input.select();
+                        document.execCommand('copy');
+                    }
+                    const original = mcpCopyBtn.textContent;
+                    mcpCopyBtn.textContent = 'Copied!';
+                    setTimeout(() => { mcpCopyBtn.textContent = original; }, 1500);
                 });
             }
         </script>

@@ -1065,6 +1065,7 @@ def dashboard():
                 )
                 chats = cursor.fetchall()
 
+    base = (APP_URL or request.url_root.rstrip('/'))
     return render_template(
         'dashboard.html',
         user_id=row[0],
@@ -1072,6 +1073,7 @@ def dashboard():
         chats=chats,
         pro_user=pro_user,
         is_agency=is_agency_role(row[4]),
+        mcp_url=f'{base}/mcp',
     )
 
 @app.route('/settings')
@@ -1087,13 +1089,17 @@ def settings():
                 session.get('email'),
             )
             pro_user = get_user_pro_status(cursor, session.get('user_id'))
+            is_agency = is_agency_role(get_user_role(cursor, session.get('user_id')))
 
     plan = 'pro' if pro_user else 'free'
+    base = (APP_URL or request.url_root.rstrip('/'))
     return render_template(
         'settings.html',
         email=session.get('email'),
         plan=plan,
         pro_user=pro_user,
+        is_agency=is_agency,
+        mcp_url=f'{base}/mcp',
     )
 
 @app.route('/sign-in')
@@ -2374,6 +2380,15 @@ def stripe_webhook():
                     deactivate_user_by_subscription(cursor, subscription_id, client_id, customer_id)
 
     return '', 200
+
+
+# Read-only MCP server (OAuth 2.1 + Streamable HTTP). Registered here, at the
+# bottom, so mcp_server can import this fully-initialised module without a cycle.
+import sys as _sys
+from mcp_server import register_mcp
+register_mcp(app, _sys.modules[__name__])
+
+
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5001))
     app.run(host='0.0.0.0', port=port)
