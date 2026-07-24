@@ -1264,6 +1264,123 @@ def tool_send_form(cur, agency_id, args):
     return {'ok': True, 'message_id': mid, 'client_id': client_id, 'form_id': form_id, 'form_name': row[0]}
 
 
+def tool_get_vault_item_url(cur, agency_id, args):
+    client_id = _need_int(args, 'client_id')
+    _require_client(cur, agency_id, client_id)
+    item_id = _need_int(args, 'item_id')
+    cur.execute(
+        'SELECT name, mime, size_bytes, storage_path, kind FROM public.vault_items WHERE id = %s AND client_id = %s',
+        (item_id, client_id),
+    )
+    row = cur.fetchone()
+    if not row:
+        raise ToolError('Vault item not found')
+    name, mime, size, storage_path, kind = row
+    if kind != 'file':
+        raise ToolError('That item is a folder, not a file')
+    ttl = _opt_int(args, 'expires_in', 3600)
+    ttl = max(60, min(ttl, 604800))
+    url = _vault_signed_url(storage_path, ttl)
+    if not url:
+        raise ToolError('Could not create a download URL (storage not configured or file missing)')
+    return {'item_id': item_id, 'name': name, 'mime': mime, 'size': size,
+            'download_url': url, 'expires_in': ttl}
+
+
+def _form_folder_ok(cur, agency_id, parent_id):
+    if parent_id is None:
+        return True
+    cur.execute("SELECT 1 FROM public.form_items WHERE id = %s AND agency_id = %s AND kind = 'folder'",
+                (parent_id, agency_id))
+    return cur.fetchone() is not None
+
+
+def tool_create_form_folder(cur, agency_id, args):
+    name = (args.get('name') or 'New folder').strip()[:120] or 'New folder'
+    parent_id = args.get('parent_id')
+    if parent_id is not None:
+        parent_id = int(parent_id)
+    if not _form_folder_ok(cur, agency_id, parent_id):
+        raise ToolError('parent_id is not a folder in your form library')
+    x = float(args.get('x', 40)); y = float(args.get('y', 40))
+    cur.execute(
+        "INSERT INTO public.form_items (agency_id, parent_id, kind, name, pos_x, pos_y) "
+        "VALUES (%s, %s, 'folder', %s, %s, %s) RETURNING id",
+        (agency_id, parent_id, name, x, y),
+    )
+    fid = cur.fetchone()[0]
+    return {'ok': True, 'item': {'id': fid, 'kind': 'folder', 'name': name, 'parent_id': parent_id}}
+
+
+def tool_create_form(cur, agency_id, args):
+    name = (args.get('name') or 'Untitled form').strip()[:200] or 'Untitled form'
+    fields = args.get('fields') or []
+    if not isinstance(fields, list):
+        raise ToolError('fields must be an array')
+    schema = portal.normalize_form_schema({'fields': fields})
+    parent_id = args.get('parent_id')
+    if parent_id is not None:
+        parent_id = int(parent_id)
+        if not _form_folder_ok(cur, agency_id, parent_id):
+            parent_id = None
+    x = float(args.get('x', 40)); y = float(args.get('y', 40))
+    cur.execute(
+        "INSERT INTO public.form_items (agency_id, parent_id, kind, name, pos_x, pos_y, schema) "
+        "VALUES (%s, %s, 'form', %s, %s, %s, %s) RETURNING id",
+        (agency_id, parent_id, name, x, y, json.dumps(schema)),
+    )
+    fid = cur.fetchone()[0]
+    return {'ok': True, 'form_id': fid, 'name': name,
+            'fields': schema['fields'], 'field_count': len(schema['fields'])}
+
+
+def tool_update_form(cur, agency_id, args):
+    form_id = _need_int(args, 'form_id')
+    cur.execute(
+        "SELECT name, COALESCE(schema, '{}'::jsonb) FROM public.form_items "
+        "WHERE id = %s AND agency_id = %s AND kind = 'form'",
+        (form_id, agency_id),
+    )
+    row = cur.fetchone()
+    if not row:
+        raise ToolError('Form not found or not owned by your agency')
+    name = (args.get('name') or row[0] or 'Untitled form').strip()[:200] or (row[0] or 'Untitled form')
+    if args.get('fields') is not None:
+        if not isinstance(args['fields'], list):
+            raise ToolError('fields must be an array')
+        schema = portal.normalize_form_schema({'fields': args['fields']})
+    else:
+        existing = row[1] if isinstance(row[1], dict) else {}
+        schema = {'fields': existing.get('fields', []) if isinstance(existing, dict) else []}
+    cur.execute(
+        "UPDATE public.form_items SET name = %s, schema = %s, updated_at = now() "
+        "WHERE id = %s AND agency_id = %s",
+        (name, json.dumps(schema), form_id, agency_id),
+    )
+    return {'ok': True, 'form_id': form_id, 'name': name,
+            'fields': schema.get('fields', []), 'field_count': len(schema.get('fields', []))}
+
+
+def tool_rename_form_item(cur, agency_id, args):
+    item_id = _need_int(args, 'item_id')
+    name = (args.get('name') or '').strip()[:200]
+    if not name:
+        raise ToolError('name is required')
+    cur.execute("UPDATE public.form_items SET name = %s, updated_at = now() WHERE id = %s AND agency_id = %s",
+                (name, item_id, agency_id))
+    if not cur.rowcount:
+        raise ToolError('Form item not found')
+    return {'ok': True, 'item_id': item_id, 'name': name}
+
+
+def tool_delete_form_item(cur, agency_id, args):
+    item_id = _need_int(args, 'item_id')
+    cur.execute("DELETE FROM public.form_items WHERE id = %s AND agency_id = %s", (item_id, agency_id))
+    if not cur.rowcount:
+        raise ToolError('Form item not found')
+    return {'ok': True, 'deleted_item_id': item_id}
+
+
 # ---- tool helpers --------------------------------------------------------- #
 def _need_int(args, key):
     if key not in args or args[key] is None:
@@ -1586,6 +1703,127 @@ TOOLS = [
             'additionalProperties': False,
         },
     },
+    {
+        'name': 'get_vault_item_url',
+        'description': "Get a fresh time-limited download URL for a single PixiVault file by its item_id. Use when you need one file's contents or a longer-lived link than get_vault provides.",
+        'handler': tool_get_vault_item_url,
+        'inputSchema': {
+            'type': 'object',
+            'properties': {
+                'client_id': {'type': 'integer', 'description': 'The client id.'},
+                'item_id': {'type': 'integer', 'description': 'The vault file item id (from get_vault).'},
+                'expires_in': {'type': 'integer', 'description': 'Link lifetime in seconds (60–604800, default 3600).'},
+            },
+            'required': ['client_id', 'item_id'],
+            'additionalProperties': False,
+        },
+    },
+    {
+        'name': 'create_form',
+        'description': (
+            "Create a new form template in the agency's Form Builder. Provide the fields as a list; each field has "
+            "a type ('text', 'textarea' or 'file'), a label, an optional required flag, an optional placeholder "
+            "(text/textarea), and for file fields an optional folder (vault folder name uploads land in). Returns the new form_id."
+        ),
+        'handler': tool_create_form,
+        'annotations': {'title': 'Create form', 'readOnlyHint': False, 'destructiveHint': False},
+        'inputSchema': {
+            'type': 'object',
+            'properties': {
+                'name': {'type': 'string', 'description': 'Form title.'},
+                'fields': {
+                    'type': 'array',
+                    'description': 'The form fields, in order.',
+                    'items': {
+                        'type': 'object',
+                        'properties': {
+                            'type': {'type': 'string', 'enum': ['text', 'textarea', 'file']},
+                            'label': {'type': 'string'},
+                            'required': {'type': 'boolean'},
+                            'placeholder': {'type': 'string', 'description': 'Text/textarea only.'},
+                            'folder': {'type': 'string', 'description': 'File fields: vault folder uploads go to.'},
+                        },
+                        'required': ['type', 'label'],
+                    },
+                },
+                'parent_id': {'type': 'integer', 'description': 'Optional form-library folder to place it in.'},
+            },
+            'required': ['name', 'fields'],
+            'additionalProperties': False,
+        },
+    },
+    {
+        'name': 'create_form_folder',
+        'description': "Create a folder in the agency's Form Builder library to organize form templates.",
+        'handler': tool_create_form_folder,
+        'annotations': {'title': 'Create form folder', 'readOnlyHint': False, 'destructiveHint': False},
+        'inputSchema': {
+            'type': 'object',
+            'properties': {
+                'name': {'type': 'string', 'description': 'Folder name.'},
+                'parent_id': {'type': 'integer', 'description': 'Optional parent folder id.'},
+            },
+            'required': ['name'],
+            'additionalProperties': False,
+        },
+    },
+    {
+        'name': 'update_form',
+        'description': "Update an existing form template's name and/or fields. Omit fields to keep them; pass a new fields array to replace them entirely.",
+        'handler': tool_update_form,
+        'annotations': {'title': 'Update form', 'readOnlyHint': False, 'destructiveHint': False, 'idempotentHint': True},
+        'inputSchema': {
+            'type': 'object',
+            'properties': {
+                'form_id': {'type': 'integer', 'description': 'The form template id.'},
+                'name': {'type': 'string', 'description': 'New title (optional).'},
+                'fields': {
+                    'type': 'array',
+                    'description': 'Replacement fields (optional). Same shape as create_form.',
+                    'items': {
+                        'type': 'object',
+                        'properties': {
+                            'type': {'type': 'string', 'enum': ['text', 'textarea', 'file']},
+                            'label': {'type': 'string'},
+                            'required': {'type': 'boolean'},
+                            'placeholder': {'type': 'string'},
+                            'folder': {'type': 'string'},
+                        },
+                        'required': ['type', 'label'],
+                    },
+                },
+            },
+            'required': ['form_id'],
+            'additionalProperties': False,
+        },
+    },
+    {
+        'name': 'rename_form_item',
+        'description': "Rename a form template or a form-library folder.",
+        'handler': tool_rename_form_item,
+        'annotations': {'title': 'Rename form item', 'readOnlyHint': False, 'destructiveHint': False, 'idempotentHint': True},
+        'inputSchema': {
+            'type': 'object',
+            'properties': {
+                'item_id': {'type': 'integer', 'description': 'The form item id (form or folder).'},
+                'name': {'type': 'string', 'description': 'The new name.'},
+            },
+            'required': ['item_id', 'name'],
+            'additionalProperties': False,
+        },
+    },
+    {
+        'name': 'delete_form_item',
+        'description': "Delete a form template or a form-library folder (folders delete their contents too).",
+        'handler': tool_delete_form_item,
+        'annotations': {'title': 'Delete form item', 'readOnlyHint': False, 'destructiveHint': True},
+        'inputSchema': {
+            'type': 'object',
+            'properties': {'item_id': {'type': 'integer', 'description': 'The form item id (form or folder).'}},
+            'required': ['item_id'],
+            'additionalProperties': False,
+        },
+    },
 ]
 
 # Mark every remaining (read) tool as read-only for clients that surface hints.
@@ -1634,10 +1872,12 @@ def _handle_rpc(message, agency_id):
                 'Read: get_client, get_messages, get_vault (files include a download_url), '
                 'list_delivery_dates, get_form_submissions, search_messages, list_forms, '
                 'get_form, list_form_submissions, get_site_embed (returns an iframe for chat). '
+                'get_vault_item_url (fresh link for one file). '
                 'Write: send_message, delete_message, set_delivery_date, set_progress, '
                 'set_site_url, create_vault_folder, rename_vault_item, move_vault_item, '
-                'delete_vault_item, send_form. Delete and set_* tools change live client data — '
-                'confirm intent before calling them.'
+                'delete_vault_item, send_form. Form Builder: create_form, create_form_folder, '
+                'update_form, rename_form_item, delete_form_item. Delete and set_* tools change '
+                'live client data — confirm intent before calling them.'
             ),
         })
 
