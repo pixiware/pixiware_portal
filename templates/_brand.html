@@ -1,0 +1,18 @@
+<style>
+  .brand_logo { max-height: 40px; max-width: 170px; width: auto; object-fit: contain; display: block; flex: 0 0 auto; }
+  .chat_header .brand_logo { max-height: 34px; }
+</style>
+{% if brand and brand.is_custom %}
+<style>
+  :root {
+    --color-lime: {{ brand.grad_start }};
+    --color-cyan: {{ brand.grad_end }};
+    --color-emerald: {{ brand.accent }};
+    --color-emerald-dark: {{ brand.accent }};
+    --gradient-signature: linear-gradient(135deg, {{ brand.grad_start }}, {{ brand.grad_end }});
+  }
+  /* The dashboard hero shows the agency's gradient instead of the animated default. */
+  .dashboard_main { background: var(--gradient-signature) !important; }
+  #dashboard-grainient-root { display: none !important; }
+</style>
+{% endif %}

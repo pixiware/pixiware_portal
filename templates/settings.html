@@ -6,9 +6,11 @@
         <title>Settings</title>
         <link rel="stylesheet" href="{{ url_for('static', filename='base_styles.css') }}">
         <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}">
+        {% include '_brand.html' %}
     </head>
     <body class="settings-page">
         <header class="app_header">
+            {% if brand and brand.logo_url %}<img class="brand_logo" src="{{ brand.logo_url }}" alt="Agency logo">{% endif %}
             <div class="app_header__meta">
                 <h1>Settings</h1>
                 <p class="app_header__plan">
@@ -22,8 +24,9 @@
         <main class="settings_layout">
             <nav class="settings_nav" aria-label="Settings sections">
                 <button type="button" class="settings_nav__item settings_nav__item--active" data-panel="account">Account</button>
+                {% if is_agency %}<button type="button" class="settings_nav__item" data-panel="branding">Branding</button>{% endif %}
                 {% if is_agency %}<button type="button" class="settings_nav__item" data-panel="connect">Connect AI</button>{% endif %}
-                <button type="button" class="settings_nav__item" data-panel="pricing">Pricing</button>
+                {% if show_pricing %}<button type="button" class="settings_nav__item" data-panel="pricing">Pricing</button>{% endif %}
             </nav>
 
             <div class="settings_content">
@@ -31,12 +34,53 @@
                     <h2>Account</h2>
                     <p class="settings_section__hint">
                         Manage your portal session.
-                        {% if pro_user %}You're on the <strong>Pro</strong> plan.{% else %}You're on the <strong>Free</strong> plan.{% endif %}
+                        {% if show_pricing %}{% if pro_user %}You're on the <strong>Pro</strong> plan.{% else %}You're on the <strong>Free</strong> plan.{% endif %}{% endif %}
                     </p>
                     <a class="settings_logout" href="{{ url_for('logout') }}">Log out</a>
                 </section>
 
                 {% if is_agency %}
+                <section class="settings_section settings_panel-view" id="panel-branding" hidden>
+                    <h2>Branding</h2>
+                    <p class="settings_section__hint">
+                        Your logo, colours and homepage text. All of your clients see this branding across their portal.
+                    </p>
+                    {% if request.args.get('branding') == 'saved' %}<p class="settings_section__hint" style="color:#2b7a46;font-weight:600;">✓ Branding saved.</p>{% endif %}
+                    {% if request.args.get('branding') == 'error' %}<p class="settings_section__hint" style="color:#b12727;font-weight:600;">Couldn't process that logo — try a PNG or JPG.</p>{% endif %}
+                    <form method="post" action="{{ url_for('update_branding') }}" enctype="multipart/form-data" class="brand_form" style="display:flex;flex-direction:column;gap:18px;max-width:520px;">
+                        <div>
+                            <label style="display:block;font-size:.8rem;font-weight:700;color:#3a4552;margin-bottom:6px;">Logo</label>
+                            {% if brand and brand.logo_url %}<img src="{{ brand.logo_url }}" alt="Current logo" style="max-height:44px;margin-bottom:8px;display:block;">{% endif %}
+                            <input type="file" name="logo" accept="image/*">
+                            <p style="font-size:.78rem;color:#8a95a3;margin:6px 0 0;">PNG with transparency is kept as-is; a solid background is removed automatically.</p>
+                        </div>
+                        <div style="display:flex;gap:20px;flex-wrap:wrap;">
+                            <div>
+                                <label style="display:block;font-size:.8rem;font-weight:700;color:#3a4552;margin-bottom:6px;">Gradient start</label>
+                                <input type="color" name="grad_start" id="brand-start" value="{{ brand_settings.grad_start }}" style="width:60px;height:40px;border:none;background:none;cursor:pointer;">
+                            </div>
+                            <div>
+                                <label style="display:block;font-size:.8rem;font-weight:700;color:#3a4552;margin-bottom:6px;">Gradient end</label>
+                                <input type="color" name="grad_end" id="brand-end" value="{{ brand_settings.grad_end }}" style="width:60px;height:40px;border:none;background:none;cursor:pointer;">
+                            </div>
+                            <div style="flex:1;min-width:160px;">
+                                <label style="display:block;font-size:.8rem;font-weight:700;color:#3a4552;margin-bottom:6px;">Preview</label>
+                                <div id="brand-preview" style="height:40px;border-radius:10px;"></div>
+                            </div>
+                        </div>
+                        <div>
+                            <label style="display:block;font-size:.8rem;font-weight:700;color:#3a4552;margin-bottom:6px;">Homepage lead text</label>
+                            <input type="text" name="hero_lead" value="{{ brand_settings.hero_lead }}" maxlength="80" style="width:100%;padding:12px 14px;border:1px solid #d5dbe2;border-radius:10px;">
+                        </div>
+                        <div>
+                            <label style="display:block;font-size:.8rem;font-weight:700;color:#3a4552;margin-bottom:6px;">Rotating words (comma separated)</label>
+                            <input type="text" name="hero_words" value="{{ brand_settings.hero_words }}" style="width:100%;padding:12px 14px;border:1px solid #d5dbe2;border-radius:10px;">
+                            <p style="font-size:.78rem;color:#8a95a3;margin:6px 0 0;">e.g. “{{ brand_settings.hero_lead }} <em>beautiful</em>”.</p>
+                        </div>
+                        <button type="submit" class="agency_btn agency_btn--primary" style="align-self:flex-start;padding:12px 22px;">Save branding</button>
+                    </form>
+                </section>
+
                 <section class="settings_section settings_panel-view" id="panel-connect" hidden>
                     <h2>Connect AI</h2>
                     <p class="settings_section__hint">
@@ -63,6 +107,7 @@
                 </section>
                 {% endif %}
 
+                {% if show_pricing %}
                 <section class="settings_section settings_panel-view" id="panel-pricing" hidden>
                     <div class="pricing_current">
                         <span class="pricing_current__label">Current plan</span>
@@ -107,6 +152,7 @@
                         {% endif %}
                     </div>
                 </section>
+                {% endif %}
             </div>
         </main>
 
@@ -176,6 +222,20 @@
                     startBillingRedirect(cancelBtn, cancelError, '{{ url_for("billing_cancel") }}');
                 });
             }
+        </script>
+        <script>
+            (function () {
+                const s = document.getElementById('brand-start');
+                const e = document.getElementById('brand-end');
+                const preview = document.getElementById('brand-preview');
+                if (!s || !e || !preview) return;
+                const paint = () => {
+                    preview.style.background = `linear-gradient(135deg, ${s.value}, ${e.value})`;
+                };
+                s.addEventListener('input', paint);
+                e.addEventListener('input', paint);
+                paint();
+            })();
         </script>
         <script>
             const mcpCopyBtn = document.getElementById('mcp-copy');

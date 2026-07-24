@@ -16,6 +16,10 @@ import stripe
 
 ATTACHMENTS_BUCKET = 'message_attatchments'
 VAULT_BUCKET = 'vault_documents'
+BRAND_BUCKET = 'brand_assets'
+MAX_LOGO_BYTES = 5 * 1024 * 1024
+DEFAULT_HERO_LEAD = "Let's make your site"
+DEFAULT_HERO_WORDS = ['special', 'beautiful', 'stand-out', 'different']
 MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
 MAX_VAULT_BYTES = 25 * 1024 * 1024
 ALLOWED_ATTACHMENT_TYPES = {
@@ -789,6 +793,7 @@ _messages_schema_ready = False
 _agency_schema_ready = False
 _vault_schema_ready = False
 _forms_schema_ready = False
+_branding_schema_ready = False
 
 
 def external_url(endpoint, **values):
@@ -976,6 +981,233 @@ def ensure_forms_schema(conn):
     _forms_schema_ready = True
 
 
+def ensure_branding_schema(conn):
+    global _branding_schema_ready
+    if _branding_schema_ready:
+        return
+    with conn.cursor() as cursor:
+        cursor.execute('ALTER TABLE public.users ADD COLUMN IF NOT EXISTS brand_logo_path text')
+        cursor.execute('ALTER TABLE public.users ADD COLUMN IF NOT EXISTS brand_grad_start text')
+        cursor.execute('ALTER TABLE public.users ADD COLUMN IF NOT EXISTS brand_grad_end text')
+        cursor.execute('ALTER TABLE public.users ADD COLUMN IF NOT EXISTS brand_hero_lead text')
+        cursor.execute('ALTER TABLE public.users ADD COLUMN IF NOT EXISTS brand_hero_words text')
+        try:
+            cursor.execute('SAVEPOINT brand_bucket')
+            cursor.execute(
+                '''
+                INSERT INTO storage.buckets (id, name, public)
+                VALUES (%s, %s, true)
+                ON CONFLICT (id) DO NOTHING
+                ''',
+                (BRAND_BUCKET, BRAND_BUCKET),
+            )
+            cursor.execute('RELEASE SAVEPOINT brand_bucket')
+        except psycopg.Error:
+            cursor.execute('ROLLBACK TO SAVEPOINT brand_bucket')
+    _branding_schema_ready = True
+
+
+def _logo_is_transparent(img):
+    """True if the image already has meaningful transparency."""
+    if 'A' not in img.getbands():
+        return False
+    alpha = img.getchannel('A')
+    lo, _ = alpha.getextrema()
+    return lo < 250
+
+
+def _remove_solid_background(img, tol=36):
+    """Flood-fill from the borders, clearing pixels that match the background
+    colour. Only the connected outer region is removed, so same-coloured areas
+    inside the logo (e.g. white text) are preserved."""
+    from collections import deque
+    img = img.convert('RGBA')
+    w, h = img.size
+    px = img.load()
+    corners = [px[0, 0], px[w - 1, 0], px[0, h - 1], px[w - 1, h - 1]]
+    br = sum(c[0] for c in corners) // 4
+    bgc = sum(c[1] for c in corners) // 4
+    bb = sum(c[2] for c in corners) // 4
+    tol2 = tol * tol
+
+    def is_bg(c):
+        return (c[0] - br) ** 2 + (c[1] - bgc) ** 2 + (c[2] - bb) ** 2 <= tol2
+
+    seen = bytearray(w * h)
+    dq = deque()
+    border = [(x, 0) for x in range(w)] + [(x, h - 1) for x in range(w)]
+    border += [(0, y) for y in range(h)] + [(w - 1, y) for y in range(h)]
+    for x, y in border:
+        idx = y * w + x
+        if not seen[idx] and is_bg(px[x, y]):
+            seen[idx] = 1
+            dq.append((x, y))
+    while dq:
+        x, y = dq.popleft()
+        r, g, b, _a = px[x, y]
+        px[x, y] = (r, g, b, 0)
+        for nx, ny in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
+            if 0 <= nx < w and 0 <= ny < h:
+                idx = ny * w + nx
+                if not seen[idx] and is_bg(px[nx, ny]):
+                    seen[idx] = 1
+                    dq.append((nx, ny))
+    return img
+
+
+def process_logo(data):
+    """Return processed PNG bytes: transparent logos are kept, solid-background
+    logos get their background stripped; then trimmed and sized for a header."""
+    from PIL import Image
+    import io
+
+    img = Image.open(io.BytesIO(data))
+    img = img.convert('RGBA')
+    # Downscale first so the flood fill stays cheap.
+    img.thumbnail((512, 512), Image.LANCZOS)
+    if not _logo_is_transparent(img):
+        img = _remove_solid_background(img)
+    # Trim to the visible (non-transparent) bounds.
+    bbox = img.getchannel('A').getbbox()
+    if bbox:
+        img = img.crop(bbox)
+    out = io.BytesIO()
+    img.save(out, 'PNG')
+    return out.getvalue()
+
+
+def upload_brand_logo(data, agency_id):
+    """Process and upload an agency logo to storage; return the object path."""
+    supabase_url, service_key = get_supabase_config()
+    if not supabase_url or not service_key:
+        raise ValueError('file storage is not configured')
+    if not data:
+        raise ValueError('empty file')
+    if len(data) > MAX_LOGO_BYTES:
+        raise ValueError('logo is too large (max 5MB)')
+    try:
+        png = process_logo(data)
+    except Exception as exc:
+        raise ValueError(f'could not process image: {exc}') from exc
+
+    object_path = f'{agency_id}/{uuid.uuid4().hex}.png'
+    upload_url = f'{supabase_url}/storage/v1/object/{BRAND_BUCKET}/{object_path}'
+    req = Request(
+        upload_url,
+        data=png,
+        method='POST',
+        headers={
+            'Authorization': f'Bearer {service_key}',
+            'apikey': service_key,
+            'Content-Type': 'image/png',
+            'x-upsert': 'true',
+        },
+    )
+    try:
+        with urlopen(req) as response:
+            response.read()
+    except HTTPError as exc:
+        detail = exc.read().decode('utf-8', errors='replace')
+        raise ValueError(f'upload failed: {detail or exc.reason}') from exc
+    return object_path
+
+
+def _brand_words_list(raw):
+    if not raw:
+        return list(DEFAULT_HERO_WORDS)
+    words = [w.strip() for w in raw.split(',') if w.strip()]
+    return words or list(DEFAULT_HERO_WORDS)
+
+
+def resolve_branding(cursor, user_id):
+    """Effective branding for the user: an agency uses its own; a client uses its
+    agency's; Pixiware (ADMIN_ACC_ID) and unbranded agencies fall back to the
+    default green identity."""
+    cursor.execute('SELECT role, agency_id FROM public.users WHERE id = %s', (user_id,))
+    row = cursor.fetchone()
+    if not row:
+        return _default_branding()
+    role, agency_id = row
+    brand_owner = user_id if is_agency_role(role) else agency_id
+    if not brand_owner:
+        return _default_branding()
+
+    cursor.execute(
+        'SELECT id, brand_logo_path, brand_grad_start, brand_grad_end, '
+        'brand_hero_lead, brand_hero_words FROM public.users WHERE id = %s',
+        (brand_owner,),
+    )
+    b = cursor.fetchone()
+    if not b:
+        return _default_branding()
+
+    owner_id, logo_path, gstart, gend, hero_lead, hero_words = b
+    # Pixiware itself stays green unless it has explicitly set a gradient.
+    is_pixiware = owner_id == ADMIN_ACC_ID
+    has_custom_colors = bool(gstart and gend) and not is_pixiware
+    logo_url = None
+    if logo_path:
+        logo_url = f"{url_for('brand_logo', agency_id=owner_id)}?v={logo_path.split('/')[-1][:12]}"
+
+    return {
+        'is_custom': has_custom_colors,
+        'grad_start': gstart or '#a3e635',
+        'grad_end': gend or '#06b6d4',
+        'accent': gend or '#10b981',
+        'logo_url': logo_url,
+        'hero_lead': (hero_lead or DEFAULT_HERO_LEAD) if not is_pixiware else DEFAULT_HERO_LEAD,
+        'hero_words': _brand_words_list(hero_words) if not is_pixiware else list(DEFAULT_HERO_WORDS),
+    }
+
+
+def _default_branding():
+    return {
+        'is_custom': False,
+        'grad_start': '#a3e635',
+        'grad_end': '#06b6d4',
+        'accent': '#10b981',
+        'logo_url': None,
+        'hero_lead': DEFAULT_HERO_LEAD,
+        'hero_words': list(DEFAULT_HERO_WORDS),
+    }
+
+
+@app.context_processor
+def inject_branding():
+    """Make the effective `brand` available to every template render."""
+    user_id = session.get('user_id')
+    if not user_id:
+        return {'brand': _default_branding()}
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                return {'brand': resolve_branding(cursor, user_id)}
+    except Exception:
+        return {'brand': _default_branding()}
+
+
+@app.route('/brand/<int:agency_id>/logo')
+def brand_logo(agency_id):
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute('SELECT brand_logo_path FROM public.users WHERE id = %s', (agency_id,))
+            row = cursor.fetchone()
+    if not row or not row[0]:
+        abort(404)
+    supabase_url, service_key = get_supabase_config()
+    if not supabase_url or not service_key:
+        abort(503)
+    download_url = f'{supabase_url}/storage/v1/object/{BRAND_BUCKET}/{quote(row[0], safe="/")}'
+    req = Request(download_url, headers={'Authorization': f'Bearer {service_key}', 'apikey': service_key})
+    try:
+        with urlopen(req) as response:
+            data = response.read()
+    except HTTPError:
+        abort(404)
+    return Response(data, mimetype='image/png',
+                    headers={'Cache-Control': 'public, max-age=86400'})
+
+
 def get_db_connection():
     conn = psycopg.connect(DB_URL, prepare_threshold=None)
     try:
@@ -984,6 +1216,7 @@ def get_db_connection():
         ensure_agency_schema(conn)
         ensure_vault_schema(conn)
         ensure_forms_schema(conn)
+        ensure_branding_schema(conn)
     except psycopg.Error as exc:
         conn.rollback()
         print(f'Could not ensure database schema: {exc}')
@@ -1089,7 +1322,23 @@ def settings():
                 session.get('email'),
             )
             pro_user = get_user_pro_status(cursor, session.get('user_id'))
-            is_agency = is_agency_role(get_user_role(cursor, session.get('user_id')))
+            cursor.execute(
+                'SELECT role, agency_id, brand_grad_start, brand_grad_end, '
+                'brand_hero_lead, brand_hero_words FROM public.users WHERE id = %s',
+                (session.get('user_id'),),
+            )
+            row = cursor.fetchone() or (None, None, None, None, None, None)
+            role, agency_id = row[0], row[1]
+            is_agency = is_agency_role(role)
+            # Agencies (they pay Pixiware) and Pixiware's own clients see pricing;
+            # clients of any other agency do not.
+            show_pricing = is_agency or (role == 'client' and agency_id == ADMIN_ACC_ID)
+            brand_settings = {
+                'grad_start': row[2] or '#a3e635',
+                'grad_end': row[3] or '#06b6d4',
+                'hero_lead': row[4] or DEFAULT_HERO_LEAD,
+                'hero_words': row[5] or ', '.join(DEFAULT_HERO_WORDS),
+            }
 
     plan = 'pro' if pro_user else 'free'
     base = (APP_URL or request.url_root.rstrip('/'))
@@ -1099,8 +1348,38 @@ def settings():
         plan=plan,
         pro_user=pro_user,
         is_agency=is_agency,
+        show_pricing=show_pricing,
+        brand_settings=brand_settings,
         mcp_url=f'{base}/mcp',
     )
+
+
+@app.route('/settings/branding', methods=['POST'])
+def update_branding():
+    user_id = session.get('user_id')
+    if not user_id:
+        return redirect(url_for('sign_in'))
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            if not is_agency_role(get_user_role(cursor, user_id)):
+                abort(403)
+            grad_start = (request.form.get('grad_start') or '').strip() or None
+            grad_end = (request.form.get('grad_end') or '').strip() or None
+            hero_lead = (request.form.get('hero_lead') or '').strip() or None
+            hero_words = (request.form.get('hero_words') or '').strip() or None
+            cursor.execute(
+                'UPDATE public.users SET brand_grad_start = %s, brand_grad_end = %s, '
+                'brand_hero_lead = %s, brand_hero_words = %s WHERE id = %s',
+                (grad_start, grad_end, hero_lead, hero_words, user_id),
+            )
+            logo_file = request.files.get('logo')
+            if logo_file and logo_file.filename:
+                try:
+                    path = upload_brand_logo(logo_file.read(), user_id)
+                    cursor.execute('UPDATE public.users SET brand_logo_path = %s WHERE id = %s', (path, user_id))
+                except ValueError:
+                    return redirect(url_for('settings', branding='error'))
+    return redirect(url_for('settings', branding='saved'))
 
 @app.route('/sign-in')
 def sign_in():
@@ -1115,17 +1394,31 @@ def sign_up_api():
     email = request.form['email']
     password = request.form['password']
     org_name = request.form['org_name']
+    grad_start = (request.form.get('grad_start') or '').strip() or None
+    grad_end = (request.form.get('grad_end') or '').strip() or None
+    hero_lead = (request.form.get('hero_lead') or '').strip() or None
+    hero_words = (request.form.get('hero_words') or '').strip() or None
+    logo_file = request.files.get('logo')
     hashed_password = generate_password_hash(password)
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 '''
-                INSERT INTO public.users (email, password, created_at, name, chats, role)
-                VALUES (%s, %s, %s, %s, %s, %s) RETURNING id
+                INSERT INTO public.users (email, password, created_at, name, chats, role,
+                    brand_grad_start, brand_grad_end, brand_hero_lead, brand_hero_words)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
                 ''',
-                (email, hashed_password, datetime.now(timezone.utc), org_name, '', 'agency'),
+                (email, hashed_password, datetime.now(timezone.utc), org_name, '', 'agency',
+                 grad_start, grad_end, hero_lead, hero_words),
             )
             user_id = cursor.fetchone()[0]
+
+            if logo_file and logo_file.filename:
+                try:
+                    path = upload_brand_logo(logo_file.read(), user_id)
+                    cursor.execute('UPDATE public.users SET brand_logo_path = %s WHERE id = %s', (path, user_id))
+                except ValueError:
+                    pass  # account is still created even if the logo fails to process
 
             session['user_id'] = int(user_id)
             session['email'] = email

@@ -8,9 +8,11 @@
         <link rel="stylesheet" href="{{ url_for('static', filename='chat.css') }}">
         <link rel="stylesheet" href="{{ url_for('static', filename='vault.css') }}">
         <link rel="stylesheet" href="{{ url_for('static', filename='forms.css') }}">
+        {% include '_brand.html' %}
     </head>
     <body>
         <header class="chat_header">
+            {% if brand and brand.logo_url %}<img class="brand_logo" src="{{ brand.logo_url }}" alt="Agency logo">{% endif %}
             <div class="chat_header__info">
                 <span class="chat_header__label">Agency</span>
                 <h1><span class="chat_header__name">Form Builder</span></h1>

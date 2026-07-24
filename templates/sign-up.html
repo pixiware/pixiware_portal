@@ -5,17 +5,65 @@
         <meta name="theme-color" content="#10b981">
         <title>Sign Up</title>
         <link rel="stylesheet" href="{{ url_for('static', filename='base_styles.css') }}">
+        <style>
+            .brand_fields { text-align: left; margin-top: 8px; border-top: 1px solid var(--color-border); padding-top: 16px; }
+            .brand_fields h2 { font-size: 1rem; margin: 0 0 4px; }
+            .brand_fields p.hint { font-size: .82rem; color: var(--color-text-muted); margin: 0 0 14px; }
+            .brand_row { display: flex; gap: 16px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 12px; }
+            .brand_row label { display: block; font-size: .78rem; font-weight: 700; color: #3a4552; margin-bottom: 5px; }
+            .brand_swatch { width: 56px; height: 40px; border: none; background: none; cursor: pointer; padding: 0; }
+            #signup-preview { flex: 1; min-width: 140px; height: 40px; border-radius: 10px; }
+            .brand_fields input[type="text"], .brand_fields input[type="file"] { width: 100%; }
+        </style>
     </head>
     <body class="auth-page">
-        
+
         <h1>Sign Up</h1>
         <p class="auth-subtitle">Create your agency account</p>
-        <form action="/sign-up-api" method="post">
-            <input type="text" name="email" placeholder="Email">
-            <input type="password" name="password" placeholder="Password">
-            <input type="text" name="org_name" placeholder="Agency name">
-            <button type="submit">Sign Up</button>
+        <form action="/sign-up-api" method="post" enctype="multipart/form-data">
+            <input type="text" name="email" placeholder="Email" required>
+            <input type="password" name="password" placeholder="Password" required>
+            <input type="text" name="org_name" placeholder="Agency name" required>
+
+            <div class="brand_fields">
+                <h2>Your branding</h2>
+                <p class="hint">This shows across every client's portal. You can change it later in Settings.</p>
+
+                <label>Logo (optional)</label>
+                <input type="file" name="logo" accept="image/*">
+                <p class="hint" style="margin-top:6px;">Transparent PNGs are kept as-is; a solid background is removed automatically.</p>
+
+                <div class="brand_row">
+                    <div>
+                        <label>Colour start</label>
+                        <input class="brand_swatch" type="color" name="grad_start" id="su-start" value="#a3e635">
+                    </div>
+                    <div>
+                        <label>Colour end</label>
+                        <input class="brand_swatch" type="color" name="grad_end" id="su-end" value="#06b6d4">
+                    </div>
+                    <div id="signup-preview" title="Gradient preview"></div>
+                </div>
+
+                <label>Homepage lead text</label>
+                <input type="text" name="hero_lead" value="Let's make your site" maxlength="80">
+
+                <label style="margin-top:12px;">Rotating words (comma separated)</label>
+                <input type="text" name="hero_words" value="special, beautiful, stand-out, different">
+            </div>
+
+            <button type="submit">Create agency</button>
         </form>
         <a class="auth-footer" href="/sign-in">Already have an account? Sign in</a>
+
+        <script>
+            (function () {
+                const s = document.getElementById('su-start');
+                const e = document.getElementById('su-end');
+                const p = document.getElementById('signup-preview');
+                const paint = () => { p.style.background = `linear-gradient(135deg, ${s.value}, ${e.value})`; };
+                s.addEventListener('input', paint); e.addEventListener('input', paint); paint();
+            })();
+        </script>
     </body>
 </html>

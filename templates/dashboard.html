@@ -8,6 +8,7 @@
         <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}">
         <link rel="stylesheet" href="{{ url_for('static', filename='dashboard-bg/grainient.css') }}">
         <link rel="stylesheet" href="{{ url_for('static', filename='forms.css') }}">
+        {% include '_brand.html' %}
         <style>
             .mcp_modal { position:fixed; inset:0; z-index:1000; display:flex;
                          align-items:center; justify-content:center; padding:20px; }
@@ -35,6 +36,7 @@
     </head>
     <body>
         <header class="app_header">
+            {% if brand and brand.logo_url %}<img class="brand_logo" src="{{ brand.logo_url }}" alt="Agency logo">{% endif %}
             <div class="app_header__meta">
                 <h1>Dashboard</h1>
                 <p class="app_header__plan">
@@ -125,7 +127,7 @@
                     <div id="dashboard-grainient-root" class="dashboard_main__bg"></div>
                     <div class="dashboard_main__hero">
                         <p class="dashboard_main__tagline">
-                            Let's make your site <span class="dashboard_main__typed"><span id="hero-word"></span><span class="dashboard_main__cursor" aria-hidden="true">|</span></span>
+                            {{ brand.hero_lead if brand else "Let's make your site" }} <span class="dashboard_main__typed"><span id="hero-word"></span><span class="dashboard_main__cursor" aria-hidden="true">|</span></span>
                         </p>
                     </div>
                 </div>
@@ -134,7 +136,7 @@
         <script type="module" src="{{ url_for('static', filename='dashboard-bg/dashboard-bg.js') }}"></script>
         <script>
             (function () {
-                const words = ['special', 'beautiful', 'stand-out', 'different'];
+                const words = {{ ((brand.hero_words if brand else none) or ['special', 'beautiful', 'stand-out', 'different']) | tojson }};
                 const wordEl = document.getElementById('hero-word');
                 if (!wordEl) return;
 
