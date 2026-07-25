@@ -1147,6 +1147,86 @@ def tool_get_site_embed(cur, agency_id, args):
     return {'client_id': client_id, 'site_url': url, 'iframe': _iframe_html(url) if url else None}
 
 
+def _fetch_url_bytes(url):
+    """Download a file from an http(s) URL, capped at the vault size limit.
+    Returns (bytes, derived_filename)."""
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    if parsed.scheme not in ('http', 'https'):
+        raise ToolError('url must start with http:// or https://')
+    req = urllib.request.Request(url, headers={'User-Agent': 'PixiwarePortal/1.0'})
+    cap = portal.MAX_VAULT_BYTES
+    try:
+        with urllib.request.urlopen(req, timeout=25) as r:
+            data = r.read(cap + 1)
+            if len(data) > cap:
+                raise ToolError('file is too large (max 25MB)')
+            name = None
+            cd = r.headers.get('Content-Disposition', '') or ''
+            if 'filename=' in cd:
+                name = cd.split('filename=')[-1].strip().strip('"; ')
+            if not name:
+                name = parsed.path.rsplit('/', 1)[-1] or 'file'
+            return data, name
+    except ToolError:
+        raise
+    except Exception as exc:
+        raise ToolError(f'could not fetch url: {exc}')
+
+
+def tool_upload_vault_file(cur, agency_id, args):
+    client_id = _need_int(args, 'client_id')
+    _require_client(cur, agency_id, client_id)
+    filename = (args.get('filename') or '').strip()
+    url = (args.get('url') or '').strip()
+    b64 = args.get('content_base64')
+
+    if b64:
+        try:
+            data = base64.b64decode(b64, validate=True)
+        except Exception:
+            raise ToolError('content_base64 is not valid base64')
+        if not filename:
+            raise ToolError('filename is required when using content_base64')
+    elif url:
+        data, derived = _fetch_url_bytes(url)
+        if not filename:
+            filename = derived or 'file'
+    else:
+        raise ToolError('provide either url or content_base64')
+
+    parent_id = args.get('parent_id')
+    if parent_id is not None:
+        parent_id = int(parent_id)
+        if not portal.vault_parent_ok(cur, parent_id, client_id):
+            raise ToolError('parent_id is not a folder in this vault')
+
+    try:
+        stored = portal.store_vault_bytes(data, filename, args.get('mime'), client_id)
+    except ValueError as exc:
+        raise ToolError(str(exc))
+
+    name = (args.get('name') or filename).strip()[:200] or filename
+    x = float(args.get('x', 40)); y = float(args.get('y', 40))
+    cur.execute(
+        '''INSERT INTO public.vault_items
+               (client_id, parent_id, kind, name, pos_x, pos_y, storage_path, mime, size_bytes, uploaded_by)
+           VALUES (%s, %s, 'file', %s, %s, %s, %s, %s, %s, %s) RETURNING id''',
+        (client_id, parent_id, name, x, y, stored['path'], stored['mime'], stored['size'], agency_id),
+    )
+    item_id = cur.fetchone()[0]
+    return {
+        'ok': True,
+        'item_id': item_id,
+        'client_id': client_id,
+        'parent_id': parent_id,
+        'name': name,
+        'mime': stored['mime'],
+        'size': stored['size'],
+        'download_url': _vault_signed_url(stored['path']),
+    }
+
+
 def tool_create_vault_folder(cur, agency_id, args):
     client_id = _need_int(args, 'client_id')
     _require_client(cur, agency_id, client_id)
@@ -1622,6 +1702,33 @@ TOOLS = [
         },
     },
     {
+        'name': 'upload_vault_file',
+        'description': (
+            "Upload a file into a client's PixiVault. Provide the file either as `url` (the server "
+            "downloads it) or as base64 in `content_base64` with a `filename`. Optionally place it in "
+            "a folder with `parent_id`. Returns the new item_id — pass that to move_vault_item to "
+            "rearrange it. Allowed types: images (jpg/png/gif/webp), pdf, txt, csv, zip, doc, docx, xlsx, pptx. Max 25MB."
+        ),
+        'handler': tool_upload_vault_file,
+        'annotations': {'title': 'Upload vault file', 'readOnlyHint': False, 'destructiveHint': False},
+        'inputSchema': {
+            'type': 'object',
+            'properties': {
+                'client_id': {'type': 'integer', 'description': 'The client whose vault to upload to.'},
+                'url': {'type': 'string', 'description': 'http(s) URL of the file to fetch and store.'},
+                'content_base64': {'type': 'string', 'description': 'Base64-encoded file bytes (alternative to url).'},
+                'filename': {'type': 'string', 'description': 'File name incl. extension (required with content_base64; sets the type).'},
+                'name': {'type': 'string', 'description': 'Optional display name (defaults to filename).'},
+                'mime': {'type': 'string', 'description': 'Optional MIME type override.'},
+                'parent_id': {'type': 'integer', 'description': 'Optional vault folder id to place the file in.'},
+                'x': {'type': 'number', 'description': 'Optional canvas x position.'},
+                'y': {'type': 'number', 'description': 'Optional canvas y position.'},
+            },
+            'required': ['client_id'],
+            'additionalProperties': False,
+        },
+    },
+    {
         'name': 'create_vault_folder',
         'description': "Create a folder in a client's PixiVault. Optionally nest it under a parent folder.",
         'handler': tool_create_vault_folder,
@@ -1874,8 +1981,9 @@ def _handle_rpc(message, agency_id):
                 'get_form, list_form_submissions, get_site_embed (returns an iframe for chat). '
                 'get_vault_item_url (fresh link for one file). '
                 'Write: send_message, delete_message, set_delivery_date, set_progress, '
-                'set_site_url, create_vault_folder, rename_vault_item, move_vault_item, '
-                'delete_vault_item, send_form. Form Builder: create_form, create_form_folder, '
+                'set_site_url, upload_vault_file (by url or base64), create_vault_folder, '
+                'rename_vault_item, move_vault_item, delete_vault_item, send_form. '
+                'Form Builder: create_form, create_form_folder, '
                 'update_form, rename_form_item, delete_form_item. Delete and set_* tools change '
                 'live client data — confirm intent before calling them.'
             ),

@@ -363,19 +363,20 @@ def vault_parent_ok(cursor, parent_id, client_id):
     )
     return cursor.fetchone() is not None
 
-def upload_vault_object(file_storage, client_id):
+def store_vault_bytes(data, filename, reported_mime, client_id):
+    """Validate and upload raw file bytes to a client's vault storage bucket.
+    Returns {path, mime, size}. Shared by the web upload route and the MCP tool."""
     supabase_url, service_key = get_supabase_config()
     if not supabase_url or not service_key:
         raise ValueError('file storage is not configured')
 
-    data = file_storage.read()
     if not data:
         raise ValueError('empty file')
     if len(data) > MAX_VAULT_BYTES:
         raise ValueError('file is too large (max 25MB)')
 
-    mime = resolve_attachment_mime(file_storage.filename, file_storage.mimetype)
-    safe_name = secure_filename(file_storage.filename) or 'file'
+    mime = resolve_attachment_mime(filename, reported_mime)
+    safe_name = secure_filename(filename) or 'file'
     object_path = f'{client_id}/{uuid.uuid4().hex}_{safe_name}'
     upload_url = f'{supabase_url}/storage/v1/object/{VAULT_BUCKET}/{object_path}'
 
@@ -398,6 +399,11 @@ def upload_vault_object(file_storage, client_id):
         raise ValueError(f'upload failed: {detail or exc.reason}') from exc
 
     return {'path': object_path, 'mime': mime, 'size': len(data)}
+
+
+def upload_vault_object(file_storage, client_id):
+    return store_vault_bytes(file_storage.read(), file_storage.filename,
+                             file_storage.mimetype, client_id)
 
 def delete_vault_object(path):
     supabase_url, service_key = get_supabase_config()
