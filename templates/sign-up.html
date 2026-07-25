@@ -5,16 +5,7 @@
         <meta name="theme-color" content="#10b981">
         <title>Sign Up</title>
         <link rel="stylesheet" href="{{ url_for('static', filename='base_styles.css') }}">
-        <style>
-            .brand_fields { text-align: left; margin-top: 8px; border-top: 1px solid var(--color-border); padding-top: 16px; }
-            .brand_fields h2 { font-size: 1rem; margin: 0 0 4px; }
-            .brand_fields p.hint { font-size: .82rem; color: var(--color-text-muted); margin: 0 0 14px; }
-            .brand_row { display: flex; gap: 16px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 12px; }
-            .brand_row label { display: block; font-size: .78rem; font-weight: 700; color: #3a4552; margin-bottom: 5px; }
-            .brand_swatch { width: 56px; height: 40px; border: none; background: none; cursor: pointer; padding: 0; }
-            #signup-preview { flex: 1; min-width: 140px; height: 40px; border-radius: 10px; }
-            .brand_fields input[type="text"], .brand_fields input[type="file"] { width: 100%; }
-        </style>
+        <link rel="stylesheet" href="{{ url_for('static', filename='branding.css') }}">
     </head>
     <body class="auth-page">
 
@@ -25,31 +16,53 @@
             <input type="password" name="password" placeholder="Password" required>
             <input type="text" name="org_name" placeholder="Agency name" required>
 
-            <div class="brand_fields">
-                <h2>Your branding</h2>
-                <p class="hint">This shows across every client's portal. You can change it later in Settings.</p>
-
-                <label>Logo (optional)</label>
-                <input type="file" name="logo" accept="image/*">
-                <p class="hint" style="margin-top:6px;">Transparent PNGs are kept as-is; a solid background is removed automatically.</p>
-
-                <div class="brand_row">
-                    <div>
-                        <label>Colour start</label>
-                        <input class="brand_swatch" type="color" name="grad_start" id="su-start" value="#a3e635">
-                    </div>
-                    <div>
-                        <label>Colour end</label>
-                        <input class="brand_swatch" type="color" name="grad_end" id="su-end" value="#06b6d4">
-                    </div>
-                    <div id="signup-preview" title="Gradient preview"></div>
+            <div class="signup_brand">
+                <div class="signup_brand__head">
+                    <h2>Your branding</h2>
+                    <p>Shown across every client's portal. Change it anytime in Settings.</p>
                 </div>
 
-                <label>Homepage lead text</label>
-                <input type="text" name="hero_lead" value="Let's make your site" maxlength="80">
+                <div class="field">
+                    <span class="field__label">Logo (optional)</span>
+                    <div class="logo_field">
+                        <div class="logo_preview" id="logo-preview"><span class="logo_preview__empty">No logo</span></div>
+                        <label class="file_picker">
+                            <input type="file" name="logo" id="logo-input" accept="image/*" hidden>
+                            <span class="file_picker__btn">
+                                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 16V4m0 0-4 4m4-4 4 4M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                                Upload image
+                            </span>
+                            <span class="file_picker__name" id="logo-name">No file chosen</span>
+                        </label>
+                    </div>
+                    <p class="field__hint">A transparent PNG is kept as-is; a solid background is removed automatically.</p>
+                </div>
 
-                <label style="margin-top:12px;">Rotating words (comma separated)</label>
-                <input type="text" name="hero_words" value="special, beautiful, stand-out, different">
+                <div class="color_row">
+                    <div class="color_field">
+                        <span class="field__label">Start</span>
+                        <input class="color_input" type="color" name="grad_start" id="su-start" value="#a3e635">
+                    </div>
+                    <div class="color_field">
+                        <span class="field__label">End</span>
+                        <input class="color_input" type="color" name="grad_end" id="su-end" value="#06b6d4">
+                    </div>
+                    <div class="color_field" style="flex:1;min-width:150px;">
+                        <span class="field__label">Preview</span>
+                        <div class="brand_preview" id="signup-preview"></div>
+                    </div>
+                </div>
+
+                <div class="field">
+                    <span class="field__label">Homepage lead text</span>
+                    <input class="field__input" type="text" name="hero_lead" value="Let's make your site" maxlength="80">
+                </div>
+
+                <div class="field">
+                    <span class="field__label">Rotating words</span>
+                    <input class="field__input" type="text" name="hero_words" value="special, beautiful, stand-out, different">
+                    <p class="field__hint">Comma separated.</p>
+                </div>
             </div>
 
             <button type="submit">Create agency</button>
@@ -63,6 +76,19 @@
                 const p = document.getElementById('signup-preview');
                 const paint = () => { p.style.background = `linear-gradient(135deg, ${s.value}, ${e.value})`; };
                 s.addEventListener('input', paint); e.addEventListener('input', paint); paint();
+
+                const input = document.getElementById('logo-input');
+                const nameEl = document.getElementById('logo-name');
+                const thumb = document.getElementById('logo-preview');
+                input.addEventListener('change', () => {
+                    const file = input.files && input.files[0];
+                    nameEl.textContent = file ? file.name : 'No file chosen';
+                    if (file) {
+                        const reader = new FileReader();
+                        reader.onload = (ev) => { thumb.innerHTML = `<img src="${ev.target.result}" alt="Logo preview">`; };
+                        reader.readAsDataURL(file);
+                    }
+                });
             })();
         </script>
     </body>

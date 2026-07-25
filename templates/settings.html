@@ -6,6 +6,7 @@
         <title>Settings</title>
         <link rel="stylesheet" href="{{ url_for('static', filename='base_styles.css') }}">
         <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}">
+        <link rel="stylesheet" href="{{ url_for('static', filename='branding.css') }}">
         {% include '_brand.html' %}
     </head>
     <body class="settings-page">
@@ -45,65 +46,78 @@
                     <p class="settings_section__hint">
                         Your logo, colours and homepage text. All of your clients see this branding across their portal.
                     </p>
-                    {% if request.args.get('branding') == 'saved' %}<p class="settings_section__hint" style="color:#2b7a46;font-weight:600;">✓ Branding saved.</p>{% endif %}
-                    {% if request.args.get('branding') == 'error' %}<p class="settings_section__hint" style="color:#b12727;font-weight:600;">Couldn't process that logo — try a PNG or JPG.</p>{% endif %}
-                    <form method="post" action="{{ url_for('update_branding') }}" enctype="multipart/form-data" class="brand_form" style="display:flex;flex-direction:column;gap:18px;max-width:520px;">
-                        <div>
-                            <label style="display:block;font-size:.8rem;font-weight:700;color:#3a4552;margin-bottom:6px;">Logo</label>
-                            {% if brand and brand.logo_url %}<img src="{{ brand.logo_url }}" alt="Current logo" style="max-height:44px;margin-bottom:8px;display:block;">{% endif %}
-                            <input type="file" name="logo" accept="image/*">
-                            <p style="font-size:.78rem;color:#8a95a3;margin:6px 0 0;">PNG with transparency is kept as-is; a solid background is removed automatically.</p>
-                        </div>
-                        <div style="display:flex;gap:20px;flex-wrap:wrap;">
-                            <div>
-                                <label style="display:block;font-size:.8rem;font-weight:700;color:#3a4552;margin-bottom:6px;">Gradient start</label>
-                                <input type="color" name="grad_start" id="brand-start" value="{{ brand_settings.grad_start }}" style="width:60px;height:40px;border:none;background:none;cursor:pointer;">
+                    {% if request.args.get('branding') == 'saved' %}<p class="flash flash--ok">✓ Branding saved</p>{% endif %}
+                    {% if request.args.get('branding') == 'error' %}<p class="flash flash--err">Couldn't process that logo — try a PNG or JPG.</p>{% endif %}
+                    <form method="post" action="{{ url_for('update_branding') }}" enctype="multipart/form-data" class="brand_form">
+                        <div class="field">
+                            <span class="field__label">Logo</span>
+                            <div class="logo_field">
+                                <div class="logo_preview" id="logo-preview">
+                                    {% if brand and brand.logo_url %}<img src="{{ brand.logo_url }}" alt="Current logo">{% else %}<span class="logo_preview__empty">No logo</span>{% endif %}
+                                </div>
+                                <label class="file_picker">
+                                    <input type="file" name="logo" id="logo-input" accept="image/*" hidden>
+                                    <span class="file_picker__btn">
+                                        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 16V4m0 0-4 4m4-4 4 4M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                                        Upload image
+                                    </span>
+                                    <span class="file_picker__name" id="logo-name">No file chosen</span>
+                                </label>
                             </div>
-                            <div>
-                                <label style="display:block;font-size:.8rem;font-weight:700;color:#3a4552;margin-bottom:6px;">Gradient end</label>
-                                <input type="color" name="grad_end" id="brand-end" value="{{ brand_settings.grad_end }}" style="width:60px;height:40px;border:none;background:none;cursor:pointer;">
+                            <p class="field__hint">A transparent PNG is kept as-is; a solid background is removed automatically.</p>
+                        </div>
+
+                        <div class="color_row">
+                            <div class="color_field">
+                                <span class="field__label">Start</span>
+                                <input class="color_input" type="color" name="grad_start" id="brand-start" value="{{ brand_settings.grad_start }}">
                             </div>
-                            <div style="flex:1;min-width:160px;">
-                                <label style="display:block;font-size:.8rem;font-weight:700;color:#3a4552;margin-bottom:6px;">Preview</label>
-                                <div id="brand-preview" style="height:40px;border-radius:10px;"></div>
+                            <div class="color_field">
+                                <span class="field__label">End</span>
+                                <input class="color_input" type="color" name="grad_end" id="brand-end" value="{{ brand_settings.grad_end }}">
+                            </div>
+                            <div class="color_field" style="flex:1;min-width:180px;">
+                                <span class="field__label">Preview</span>
+                                <div class="brand_preview" id="brand-preview"></div>
                             </div>
                         </div>
-                        <div>
-                            <label style="display:block;font-size:.8rem;font-weight:700;color:#3a4552;margin-bottom:6px;">Homepage lead text</label>
-                            <input type="text" name="hero_lead" value="{{ brand_settings.hero_lead }}" maxlength="80" style="width:100%;padding:12px 14px;border:1px solid #d5dbe2;border-radius:10px;">
+
+                        <div class="field">
+                            <span class="field__label">Homepage lead text</span>
+                            <input class="field__input" type="text" name="hero_lead" value="{{ brand_settings.hero_lead }}" maxlength="80">
                         </div>
-                        <div>
-                            <label style="display:block;font-size:.8rem;font-weight:700;color:#3a4552;margin-bottom:6px;">Rotating words (comma separated)</label>
-                            <input type="text" name="hero_words" value="{{ brand_settings.hero_words }}" style="width:100%;padding:12px 14px;border:1px solid #d5dbe2;border-radius:10px;">
-                            <p style="font-size:.78rem;color:#8a95a3;margin:6px 0 0;">e.g. “{{ brand_settings.hero_lead }} <em>beautiful</em>”.</p>
+
+                        <div class="field">
+                            <span class="field__label">Rotating words</span>
+                            <input class="field__input" type="text" name="hero_words" value="{{ brand_settings.hero_words }}">
+                            <p class="field__hint">Comma separated — e.g. “{{ brand_settings.hero_lead }} <em>beautiful</em>”.</p>
                         </div>
-                        <button type="submit" class="agency_btn agency_btn--primary" style="align-self:flex-start;padding:12px 22px;">Save branding</button>
+
+                        <button type="submit" class="btn_primary">Save branding</button>
                     </form>
                 </section>
 
                 <section class="settings_section settings_panel-view" id="panel-connect" hidden>
                     <h2>Connect AI</h2>
                     <p class="settings_section__hint">
-                        Give an AI assistant <strong>read-only</strong> access to your agency data.
-                        Paste the URL below into Claude or ChatGPT as a custom connector / MCP server.
-                        You'll sign in once to approve; the assistant can then read your clients,
-                        chats, PixiVault, delivery dates and form submissions — but can't change anything.
+                        Give an AI assistant access to your agency data. Paste the URL below into
+                        Claude or ChatGPT as a custom connector / MCP server. You'll sign in once to
+                        approve, then the assistant can read your clients, chats, PixiVault, delivery
+                        dates and forms — and, with your approval, make changes.
                     </p>
-                    <div class="mcp_url_row" style="display:flex;gap:8px;margin:16px 0;">
-                        <input id="mcp-url" type="text" readonly value="{{ mcp_url }}"
-                               style="flex:1;padding:12px 14px;border:1px solid #d5dbe2;border-radius:10px;font-size:.95rem;background:#f8fafc;">
-                        <button type="button" id="mcp-copy"
-                                style="padding:12px 18px;border:none;border-radius:10px;background:linear-gradient(135deg,#8bd34f,#37a3b0);color:#fff;font-weight:700;cursor:pointer;">Copy</button>
+                    <div class="mcp_field">
+                        <input id="mcp-url" class="mcp_field__input" type="text" readonly value="{{ mcp_url }}">
+                        <button type="button" id="mcp-copy" class="mcp_copy">
+                            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2" stroke="currentColor" stroke-width="1.7"/><path d="M5 15V5a2 2 0 0 1 2-2h10" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+                            Copy
+                        </button>
                     </div>
-                    <details style="margin-top:6px;">
-                        <summary style="cursor:pointer;font-weight:600;color:#3a4552;">How to connect</summary>
-                        <ol style="color:#5b6673;font-size:.9rem;line-height:1.6;padding-left:1.2rem;">
-                            <li>In Claude or ChatGPT, add a new custom connector / MCP server.</li>
-                            <li>Paste the URL above and continue.</li>
-                            <li>A Pixiware approval page opens — sign in with this agency account.</li>
-                            <li>The assistant can now read your portal data on request.</li>
-                        </ol>
-                    </details>
+                    <ol class="mcp_steps">
+                        <li>In Claude or ChatGPT, add a new custom connector / MCP server.</li>
+                        <li>Paste the URL above and continue.</li>
+                        <li>A Pixiware approval page opens — sign in with this agency account.</li>
+                        <li>The assistant can now work with your portal data on request.</li>
+                    </ol>
                 </section>
                 {% endif %}
 
@@ -228,13 +242,31 @@
                 const s = document.getElementById('brand-start');
                 const e = document.getElementById('brand-end');
                 const preview = document.getElementById('brand-preview');
-                if (!s || !e || !preview) return;
-                const paint = () => {
-                    preview.style.background = `linear-gradient(135deg, ${s.value}, ${e.value})`;
-                };
-                s.addEventListener('input', paint);
-                e.addEventListener('input', paint);
-                paint();
+                if (s && e && preview) {
+                    const paint = () => {
+                        preview.style.background = `linear-gradient(135deg, ${s.value}, ${e.value})`;
+                    };
+                    s.addEventListener('input', paint);
+                    e.addEventListener('input', paint);
+                    paint();
+                }
+
+                const input = document.getElementById('logo-input');
+                const nameEl = document.getElementById('logo-name');
+                const thumb = document.getElementById('logo-preview');
+                if (input) {
+                    input.addEventListener('change', () => {
+                        const file = input.files && input.files[0];
+                        nameEl.textContent = file ? file.name : 'No file chosen';
+                        if (file) {
+                            const reader = new FileReader();
+                            reader.onload = (ev) => {
+                                thumb.innerHTML = `<img src="${ev.target.result}" alt="Logo preview">`;
+                            };
+                            reader.readAsDataURL(file);
+                        }
+                    });
+                }
             })();
         </script>
         <script>
