@@ -405,6 +405,20 @@ def upload_vault_object(file_storage, client_id):
     return store_vault_bytes(file_storage.read(), file_storage.filename,
                              file_storage.mimetype, client_id)
 
+
+def fetch_vault_bytes(storage_path):
+    """Download a vault object's raw bytes from storage (service role)."""
+    supabase_url, service_key = get_supabase_config()
+    if not supabase_url or not service_key:
+        raise ValueError('file storage is not configured')
+    download_url = f'{supabase_url}/storage/v1/object/{VAULT_BUCKET}/{quote(storage_path, safe="/")}'
+    req = Request(download_url, headers={'Authorization': f'Bearer {service_key}', 'apikey': service_key})
+    try:
+        with urlopen(req) as response:
+            return response.read()
+    except HTTPError as exc:
+        raise ValueError('file not found in storage') from exc
+
 def delete_vault_object(path):
     supabase_url, service_key = get_supabase_config()
     if not supabase_url or not service_key or not path:

@@ -1367,6 +1367,40 @@ def tool_get_vault_item_url(cur, agency_id, args):
             'download_url': url, 'expires_in': ttl}
 
 
+READ_FILE_INLINE_LIMIT = 15 * 1024 * 1024  # base64 in a JSON-RPC response
+
+
+def tool_read_vault_file(cur, agency_id, args):
+    client_id = _need_int(args, 'client_id')
+    _require_client(cur, agency_id, client_id)
+    item_id = _need_int(args, 'item_id')
+    cur.execute(
+        'SELECT name, mime, size_bytes, storage_path, kind FROM public.vault_items WHERE id = %s AND client_id = %s',
+        (item_id, client_id),
+    )
+    row = cur.fetchone()
+    if not row:
+        raise ToolError('Vault item not found')
+    name, mime, size, storage_path, kind = row
+    if kind != 'file':
+        raise ToolError('That item is a folder, not a file')
+    if not storage_path:
+        raise ToolError('This item has no stored file')
+    try:
+        data = portal.fetch_vault_bytes(storage_path)
+    except ValueError as exc:
+        raise ToolError(str(exc))
+    if len(data) > READ_FILE_INLINE_LIMIT:
+        raise ToolError('File is larger than 15MB — use get_vault_item_url to download it by link instead')
+    return {
+        'item_id': item_id,
+        'name': name,
+        'mime': mime,
+        'size': len(data),
+        'content_base64': base64.b64encode(data).decode('ascii'),
+    }
+
+
 def _form_folder_ok(cur, agency_id, parent_id):
     if parent_id is None:
         return True
@@ -1826,6 +1860,25 @@ TOOLS = [
         },
     },
     {
+        'name': 'read_vault_file',
+        'description': (
+            "Download a PixiVault file's actual contents, returned as base64 in `content_base64` "
+            "(with name, mime and size). Use this to pull media into your context, then re-upload it "
+            "to another client with upload_vault_file. Files over 15MB are refused — use "
+            "get_vault_item_url for those."
+        ),
+        'handler': tool_read_vault_file,
+        'inputSchema': {
+            'type': 'object',
+            'properties': {
+                'client_id': {'type': 'integer', 'description': 'The client id.'},
+                'item_id': {'type': 'integer', 'description': 'The vault file item id (from get_vault).'},
+            },
+            'required': ['client_id', 'item_id'],
+            'additionalProperties': False,
+        },
+    },
+    {
         'name': 'create_form',
         'description': (
             "Create a new form template in the agency's Form Builder. Provide the fields as a list; each field has "
@@ -1979,7 +2032,9 @@ def _handle_rpc(message, agency_id):
                 'Read: get_client, get_messages, get_vault (files include a download_url), '
                 'list_delivery_dates, get_form_submissions, search_messages, list_forms, '
                 'get_form, list_form_submissions, get_site_embed (returns an iframe for chat). '
-                'get_vault_item_url (fresh link for one file). '
+                'get_vault_item_url (fresh link for one file), read_vault_file '
+                '(download a file as base64 — pair with upload_vault_file to copy media '
+                'between clients). '
                 'Write: send_message, delete_message, set_delivery_date, set_progress, '
                 'set_site_url, upload_vault_file (by url or base64), create_vault_folder, '
                 'rename_vault_item, move_vault_item, delete_vault_item, send_form. '
