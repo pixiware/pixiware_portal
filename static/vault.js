@@ -89,8 +89,32 @@
         const kids = childrenOf(currentFolder);
         emptyEl.hidden = kids.length > 0;
         kids.forEach(renderItem);
+        layoutGrid();
         renderBreadcrumb();
         updateActionBar();
+    }
+
+    // Auto-arrange every item in the current folder into an even grid, so files
+    // never pile up on top of each other (from uploads, drops or the MCP tools).
+    // Layout is by creation order and recomputed on every render / resize.
+    const GRID = { pad: 16, gapX: 20, gapY: 16, fallbackH: 104 };
+    function layoutGrid() {
+        const els = Array.from(canvas.querySelectorAll('.vault_item'));
+        if (!els.length) return;
+        const itemW = els[0].offsetWidth || 92;
+        let itemH = 0;
+        els.forEach((el) => { itemH = Math.max(itemH, el.offsetHeight); });
+        if (!itemH) itemH = GRID.fallbackH;
+        const cellW = itemW + GRID.gapX;
+        const cellH = itemH + GRID.gapY;
+        const avail = Math.max(0, canvas.clientWidth - GRID.pad * 2);
+        const cols = Math.max(1, Math.floor((avail + GRID.gapX) / cellW));
+        els.forEach((el, i) => {
+            const col = i % cols;
+            const row = Math.floor(i / cols);
+            el.style.left = (GRID.pad + col * cellW) + 'px';
+            el.style.top = (GRID.pad + row * cellH) + 'px';
+        });
     }
 
     function crumb(label, folderId) {
@@ -358,9 +382,8 @@
                     el.style.pointerEvents = '';
                     clearDropHighlight();
                     const target = dropTargetUnder(ev, item.id);
-                    if (target && target.parentId !== item.parent_id) moveItem(item, { parent_id: target.parentId, x: 40, y: 40 });
-                    else if (!target) moveItem(item, { x: curX, y: curY });
-                    else render();
+                    if (target && target.parentId !== item.parent_id) moveItem(item, { parent_id: target.parentId });
+                    else render(); // items auto-arrange in a grid, so snap back into place
                     return;
                 }
                 // a tap: second tap on the same item opens it, otherwise selects it
@@ -391,6 +414,14 @@
             emptyEl.querySelector('p').textContent = 'Could not load your vault.';
         }
     }
+
+    // Re-flow the grid when the panel width changes.
+    let resizeRaf = null;
+    window.addEventListener('resize', () => {
+        if (!loaded) return;
+        if (resizeRaf) cancelAnimationFrame(resizeRaf);
+        resizeRaf = requestAnimationFrame(layoutGrid);
+    });
 
     // ---- wiring ----
     newFolderBtn.addEventListener('click', createFolder);
