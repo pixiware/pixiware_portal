@@ -1183,7 +1183,13 @@ def _send_message_notification(agency_id, client_id, base_url):
             'https://api.resend.com/emails',
             data=json.dumps(payload).encode('utf-8'),
             method='POST',
-            headers={'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'},
+            headers={
+                'Authorization': f'Bearer {api_key}',
+                'Content-Type': 'application/json',
+                # Cloudflare fronts api.resend.com and blocks the default
+                # "Python-urllib" agent (403, error 1010) — set a real UA.
+                'User-Agent': 'PixiwarePortal/1.0 (+https://pixiware.co.uk)',
+            },
         )
         with urlopen(req) as response:
             response.read()
