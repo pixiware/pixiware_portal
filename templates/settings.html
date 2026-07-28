@@ -134,7 +134,14 @@
                     {% if request.args.get('billing') == 'error' %}<p class="flash flash--err">Couldn't connect to Stripe — please try again.</p>{% endif %}
 
                     {% if not billing or not billing.configured %}
-                        <p class="field__hint">Stripe Connect isn't configured on this server yet. Ask your admin to set <code>STRIPE_CONNECT_CLIENT_ID</code>.</p>
+                        <div class="field__hint" style="line-height:1.6;">
+                            <p style="margin:0 0 8px;"><strong>The “Connect Stripe” button appears once Stripe Connect is set up on the server.</strong> One-time setup:</p>
+                            <ol style="margin:0;padding-left:1.2rem;">
+                                <li>In your Stripe dashboard, register a Connect application <strong>as an Extension</strong> (not a Platform — only Extensions allow read-only access).</li>
+                                <li>Add the redirect URI <code>{{ (request.url_root ~ 'stripe/callback') | replace('http://', 'https://') }}</code>.</li>
+                                <li>Set these on the server: <code>STRIPE_CONNECT_CLIENT_ID</code> (the <code>ca_…</code> value), <code>PORTAL_BASE_URL</code>, <code>STRIPE_CONNECT_WEBHOOK_SECRET</code>.</li>
+                            </ol>
+                        </div>
                     {% elif not billing.connected %}
                         <a class="btn_primary" href="{{ url_for('stripe_bp.stripe_connect_start') }}" style="text-decoration:none;">Connect Stripe</a>
                     {% else %}
