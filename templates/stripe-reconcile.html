@@ -1,0 +1,182 @@
+<html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+        <meta name="theme-color" content="#10b981">
+        <title>Match Stripe customers · Pixiware</title>
+        <link rel="stylesheet" href="{{ url_for('static', filename='base_styles.css') }}">
+        <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}">
+        <link rel="stylesheet" href="{{ url_for('static', filename='branding.css') }}">
+        {% include '_brand.html' %}
+        <style>
+            .rec_wrap { max-width: 860px; margin: 0 auto; padding: 1.5rem max(1rem, env(safe-area-inset-left)) 3rem; }
+            .rec_lead { color: var(--color-text-muted); font-size: .95rem; margin: 0 0 1.5rem; line-height: 1.5; }
+            .rec_section { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); padding: 1.25rem 1.4rem; margin-bottom: 1.25rem; box-shadow: var(--shadow-sm); }
+            .rec_section h2 { font-size: 1rem; margin: 0 0 .25rem; }
+            .rec_section__hint { font-size: .82rem; color: var(--color-text-muted); margin: 0 0 1rem; }
+            .rec_count { color: var(--color-text-muted); font-weight: 600; }
+            .rec_row { display: flex; align-items: center; gap: .75rem; padding: .6rem 0; border-top: 1px solid var(--color-border); }
+            .rec_row:first-of-type { border-top: none; }
+            .rec_party { flex: 1; min-width: 0; }
+            .rec_party__name { font-weight: 600; font-size: .92rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+            .rec_party__sub { font-size: .78rem; color: var(--color-text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+            .rec_arrow { color: var(--color-text-muted); flex: 0 0 auto; }
+            .rec_badge { font-size: .64rem; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; padding: .18rem .5rem; border-radius: 999px; flex: 0 0 auto; }
+            .rec_badge--high { background: rgba(16,185,129,.12); color: #067a55; }
+            .rec_badge--suggestion { background: rgba(245,158,11,.14); color: #b45309; }
+            .rec_row input[type=checkbox] { width: 18px; height: 18px; flex: 0 0 auto; accent-color: var(--color-emerald); }
+            .rec_select { flex: 0 0 auto; max-width: 300px; padding: .5rem .6rem; border: 1px solid var(--color-border); border-radius: var(--radius-md); font-size: .85rem; background: var(--color-surface); }
+            .rec_empty { color: var(--color-text-muted); font-size: .85rem; }
+            .rec_actions { position: sticky; bottom: 0; background: linear-gradient(180deg, transparent, var(--color-bg) 40%); padding: 1rem 0; display: flex; gap: .75rem; align-items: center; }
+            .rec_state { color: var(--color-text-muted); font-size: .85rem; }
+            .rec_loading { text-align: center; color: var(--color-text-muted); padding: 3rem 0; }
+        </style>
+    </head>
+    <body class="settings-page">
+        <header class="app_header">
+            {% if brand and brand.logo_url %}<img class="brand_logo" src="{{ brand.logo_url }}" alt="Agency logo">{% endif %}
+            <div class="app_header__meta">
+                <h1>Match Stripe customers</h1>
+                <p class="app_header__plan">Read-only billing visibility</p>
+            </div>
+            <a class="settings_back" href="{{ url_for('settings') }}">← Settings</a>
+        </header>
+
+        <main class="rec_wrap">
+            <p class="rec_lead">
+                Link each portal client to the matching customer in your Stripe account so invoice
+                status shows up per client. Nothing is saved until you press <strong>Confirm</strong>.
+                Matches are suggestions — please check them; a wrong link would show one client another's totals.
+            </p>
+
+            <div id="rec-loading" class="rec_loading">Loading your Stripe customers…</div>
+            <div id="rec-error" class="rec_section" hidden></div>
+            <div id="rec-body" hidden>
+                <section class="rec_section">
+                    <h2>Matched <span class="rec_count" id="c-matched"></span></h2>
+                    <p class="rec_section__hint">Pre-ticked. Untick any that are wrong.</p>
+                    <div id="rec-matched"></div>
+                    <div id="rec-matched-empty" class="rec_empty" hidden>No automatic matches.</div>
+                </section>
+
+                <section class="rec_section">
+                    <h2>Unmatched clients <span class="rec_count" id="c-unclients"></span></h2>
+                    <p class="rec_section__hint">Pick a Stripe customer, or leave unmatched for now.</p>
+                    <div id="rec-unclients"></div>
+                    <div id="rec-unclients-empty" class="rec_empty" hidden>Every client is matched.</div>
+                </section>
+
+                <section class="rec_section">
+                    <h2>Unmatched Stripe customers <span class="rec_count" id="c-uncust"></span></h2>
+                    <p class="rec_section__hint">These have no portal client. Nothing to do — shown for reference.</p>
+                    <div id="rec-uncust"></div>
+                    <div id="rec-uncust-empty" class="rec_empty" hidden>All customers are accounted for.</div>
+                </section>
+
+                <div class="rec_actions">
+                    <button type="button" id="rec-confirm" class="btn_primary">Confirm links</button>
+                    <span class="rec_state" id="rec-state"></span>
+                </div>
+            </div>
+        </main>
+
+        <script>
+            const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+            let data = null;
+
+            function customerOptions(selectedId) {
+                const opts = ['<option value="">— leave unmatched —</option>'];
+                data.unmatched_customers.forEach((c) => {
+                    const label = (c.name || '(no name)') + (c.email ? ' · ' + c.email : '');
+                    opts.push(`<option value="${esc(c.id)}"${c.id === selectedId ? ' selected' : ''}>${esc(label)}</option>`);
+                });
+                return opts.join('');
+            }
+
+            function render() {
+                document.getElementById('rec-loading').hidden = true;
+                document.getElementById('rec-body').hidden = false;
+
+                // Matched
+                const m = document.getElementById('rec-matched');
+                document.getElementById('c-matched').textContent = '(' + data.matched.length + ')';
+                document.getElementById('rec-matched-empty').hidden = data.matched.length > 0;
+                m.innerHTML = data.matched.map((row, i) => `
+                    <label class="rec_row">
+                        <input type="checkbox" data-match="${i}" checked>
+                        <span class="rec_party"><span class="rec_party__name">${esc(row.client.name)}</span><span class="rec_party__sub">${esc(row.client.email || '')}</span></span>
+                        <span class="rec_arrow">↔</span>
+                        <span class="rec_party"><span class="rec_party__name">${esc(row.customer.name || '(no name)')}</span><span class="rec_party__sub">${esc(row.customer.email || '')}</span></span>
+                        <span class="rec_badge rec_badge--${row.confidence === 'high' ? 'high' : 'suggestion'}">${row.confidence === 'high' ? 'match' : 'maybe'}</span>
+                    </label>`).join('');
+
+                // Unmatched clients
+                const uc = document.getElementById('rec-unclients');
+                document.getElementById('c-unclients').textContent = '(' + data.unmatched_clients.length + ')';
+                document.getElementById('rec-unclients-empty').hidden = data.unmatched_clients.length > 0;
+                uc.innerHTML = data.unmatched_clients.map((cl) => `
+                    <div class="rec_row">
+                        <span class="rec_party"><span class="rec_party__name">${esc(cl.name)}</span><span class="rec_party__sub">${esc(cl.email || '')}</span></span>
+                        <span class="rec_arrow">↔</span>
+                        <select class="rec_select" data-client="${esc(cl.id)}">${customerOptions(null)}</select>
+                    </div>`).join('');
+
+                // Unmatched customers
+                const ust = document.getElementById('rec-uncust');
+                document.getElementById('c-uncust').textContent = '(' + data.unmatched_customers.length + ')';
+                document.getElementById('rec-uncust-empty').hidden = data.unmatched_customers.length > 0;
+                ust.innerHTML = data.unmatched_customers.map((c) => `
+                    <div class="rec_row"><span class="rec_party"><span class="rec_party__name">${esc(c.name || '(no name)')}</span><span class="rec_party__sub">${esc(c.email || '')}</span></span></div>`).join('');
+            }
+
+            async function load() {
+                try {
+                    const res = await fetch('{{ url_for("stripe_bp.stripe_reconcile_data") }}');
+                    const body = await res.json();
+                    if (!res.ok) {
+                        const msg = body.error === 'not_connected' ? 'Stripe is not connected. Connect it from Settings first.'
+                            : body.error === 'connection_revoked' ? 'Your Stripe connection was revoked. Please reconnect from Settings.'
+                            : ('Could not load: ' + (body.error || 'unknown error'));
+                        const e = document.getElementById('rec-error');
+                        e.hidden = false; e.textContent = msg;
+                        document.getElementById('rec-loading').hidden = true;
+                        return;
+                    }
+                    data = body;
+                    render();
+                } catch (err) {
+                    document.getElementById('rec-loading').textContent = 'Could not load your Stripe customers.';
+                }
+            }
+
+            document.getElementById('rec-confirm').addEventListener('click', async () => {
+                const links = [];
+                document.querySelectorAll('[data-match]').forEach((cb) => {
+                    if (cb.checked) {
+                        const row = data.matched[Number(cb.dataset.match)];
+                        links.push({ client_id: row.client.id, customer_id: row.customer.id });
+                    }
+                });
+                document.querySelectorAll('[data-client]').forEach((sel) => {
+                    if (sel.value) links.push({ client_id: Number(sel.dataset.client), customer_id: sel.value });
+                });
+                const btn = document.getElementById('rec-confirm');
+                const state = document.getElementById('rec-state');
+                btn.disabled = true; state.textContent = 'Saving…';
+                try {
+                    const res = await fetch('{{ url_for("stripe_bp.stripe_reconcile_confirm") }}', {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ links }),
+                    });
+                    const body = await res.json();
+                    if (!res.ok) throw new Error(body.error || 'Save failed');
+                    window.location.assign('{{ url_for("settings") }}?billing=linked');
+                } catch (err) {
+                    btn.disabled = false; state.textContent = err.message;
+                }
+            });
+
+            load();
+        </script>
+    </body>
+</html>

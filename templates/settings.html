@@ -27,6 +27,7 @@
                 <button type="button" class="settings_nav__item settings_nav__item--active" data-panel="account">Account</button>
                 {% if is_agency %}<button type="button" class="settings_nav__item" data-panel="branding">Branding</button>{% endif %}
                 {% if is_agency %}<button type="button" class="settings_nav__item" data-panel="connect">Connect AI</button>{% endif %}
+                {% if is_agency %}<button type="button" class="settings_nav__item" data-panel="billing">Billing</button>{% endif %}
                 {% if show_pricing %}<button type="button" class="settings_nav__item" data-panel="pricing">Pricing</button>{% endif %}
             </nav>
 
@@ -118,6 +119,51 @@
                         <li>A Pixiware approval page opens — sign in with this agency account.</li>
                         <li>The assistant can now work with your portal data on request.</li>
                     </ol>
+                </section>
+
+                <section class="settings_section settings_panel-view" id="panel-billing" hidden>
+                    <h2>Billing</h2>
+                    <p class="settings_section__hint">
+                        Connect your existing Stripe account, <strong>read-only</strong>, to see invoice
+                        status per client here and ask your AI things like “which clients are more than
+                        30 days overdue?”. We never process payments, move money, or change anything in Stripe.
+                    </p>
+                    {% if request.args.get('billing') == 'linked' %}<p class="flash flash--ok">✓ Customers matched</p>{% endif %}
+                    {% if request.args.get('billing') == 'cancelled' %}<p class="flash flash--err">Stripe connection cancelled.</p>{% endif %}
+                    {% if request.args.get('billing') == 'error' %}<p class="flash flash--err">Couldn't connect to Stripe — please try again.</p>{% endif %}
+
+                    {% if not billing or not billing.configured %}
+                        <p class="field__hint">Stripe Connect isn't configured on this server yet. Ask your admin to set <code>STRIPE_CONNECT_CLIENT_ID</code>.</p>
+                    {% elif not billing.connected %}
+                        <a class="btn_primary" href="{{ url_for('stripe_bp.stripe_connect_start') }}" style="text-decoration:none;">Connect Stripe</a>
+                    {% else %}
+                        <div class="mcp_field" style="align-items:center;">
+                            <span class="rec_badge rec_badge--high" style="font-size:.66rem;padding:.25rem .6rem;border-radius:999px;background:rgba(16,185,129,.12);color:#067a55;font-weight:800;">Connected{% if billing.livemode %} · live{% else %} · test{% endif %}</span>
+                            <span class="field__hint" style="margin:0;">{{ billing.invoice_count }} invoices cached{% if billing.synced_at %} · updated {{ billing.synced_at[:16].replace('T',' ') }}{% endif %}</span>
+                        </div>
+
+                        <table style="width:100%;border-collapse:collapse;margin:8px 0 16px;font-size:.9rem;">
+                            <thead><tr style="text-align:left;color:var(--color-text-muted);font-size:.72rem;text-transform:uppercase;letter-spacing:.05em;">
+                                <th style="padding:.4rem .2rem;">Client</th><th style="padding:.4rem .2rem;">Open</th><th style="padding:.4rem .2rem;text-align:right;">Outstanding</th></tr></thead>
+                            <tbody>
+                            {% for r in billing_rows %}
+                                <tr style="border-top:1px solid var(--color-border);{% if r.name == 'Unassigned' %}color:#b45309;{% endif %}">
+                                    <td style="padding:.5rem .2rem;font-weight:600;">{{ r.name }}{% if r.name == 'Unassigned' %} <span title="Invoices with no mapped client">⚠</span>{% endif %}</td>
+                                    <td style="padding:.5rem .2rem;">{{ r.count }}</td>
+                                    <td style="padding:.5rem .2rem;text-align:right;">{{ r.amounts | join(', ') }}</td>
+                                </tr>
+                            {% else %}
+                                <tr><td colspan="3" class="field__hint" style="padding:.6rem .2rem;">No open invoices.</td></tr>
+                            {% endfor %}
+                            </tbody>
+                        </table>
+
+                        <div style="display:flex;gap:10px;flex-wrap:wrap;">
+                            <a class="file_picker__btn" href="{{ url_for('stripe_bp.stripe_reconcile') }}" style="text-decoration:none;">Re-match customers</a>
+                            <button type="button" id="stripe-disconnect" class="file_picker__btn" style="color:#b12727;border-color:#f0c9c9;">Disconnect Stripe</button>
+                        </div>
+                        <p class="field__error" id="stripe-disconnect-error" hidden style="color:#b12727;font-size:.85rem;margin-top:8px;"></p>
+                    {% endif %}
                 </section>
                 {% endif %}
 
@@ -270,6 +316,25 @@
             })();
         </script>
         <script>
+            const stripeDisconnectBtn = document.getElementById('stripe-disconnect');
+            if (stripeDisconnectBtn) {
+                stripeDisconnectBtn.addEventListener('click', async () => {
+                    if (!confirm('Disconnect Stripe? Invoice data will be removed from the portal. Your client↔customer matches are kept so reconnecting is quick.')) return;
+                    const err = document.getElementById('stripe-disconnect-error');
+                    err.hidden = true;
+                    stripeDisconnectBtn.disabled = true;
+                    stripeDisconnectBtn.textContent = 'Disconnecting…';
+                    try {
+                        const res = await fetch('{{ url_for("stripe_bp.stripe_disconnect") }}', { method: 'POST' });
+                        if (!res.ok) throw new Error('Could not disconnect');
+                        window.location.assign('{{ url_for("settings") }}');
+                    } catch (e) {
+                        stripeDisconnectBtn.disabled = false;
+                        stripeDisconnectBtn.textContent = 'Disconnect Stripe';
+                        err.textContent = e.message; err.hidden = false;
+                    }
+                });
+            }
             const mcpCopyBtn = document.getElementById('mcp-copy');
             if (mcpCopyBtn) {
                 mcpCopyBtn.addEventListener('click', async () => {

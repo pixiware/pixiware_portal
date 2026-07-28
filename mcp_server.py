@@ -1401,6 +1401,164 @@ def tool_read_vault_file(cur, agency_id, args):
     }
 
 
+# --------------------------------------------------------------------------- #
+# Billing (read-only, cache-only). All reads hit invoice_cache — never Stripe.
+# --------------------------------------------------------------------------- #
+_PERIOD_SQL = {
+    'this_month': "ic.finalized_at >= date_trunc('month', now())",
+    'last_month': "ic.finalized_at >= date_trunc('month', now()) - interval '1 month' AND ic.finalized_at < date_trunc('month', now())",
+    'last_90_days': "ic.finalized_at >= now() - interval '90 days'",
+    'ytd': "ic.finalized_at >= date_trunc('year', now())",
+}
+
+
+def _billing_account(cur, agency_id):
+    cur.execute('SELECT stripe_account_id FROM public.users WHERE id = %s', (agency_id,))
+    row = cur.fetchone()
+    return row[0] if row else None
+
+
+def _billing_not_connected():
+    # An empty list reads as "no overdue invoices" — a dangerous lie. Be explicit.
+    return {'stripe_connected': False,
+            'message': 'Stripe is not connected for this workspace. Connect it in the portal '
+                       'under Settings → Billing to see invoice data.'}
+
+
+def _agency_synced_at(cur, agency_id):
+    cur.execute('SELECT MAX(synced_at) FROM public.invoice_cache WHERE agency_id = %s', (agency_id,))
+    r = cur.fetchone()
+    return _iso(r[0]) if r and r[0] else None
+
+
+def tool_get_overdue_invoices(cur, agency_id, args):
+    if not _billing_account(cur, agency_id):
+        return _billing_not_connected()
+    days = max(0, _opt_int(args, 'days_overdue', 0))
+    limit = max(1, min(_opt_int(args, 'limit', 50), 200))
+    cur.execute(
+        '''SELECT ic.number, ic.amount_due, ic.currency, ic.due_date, ic.hosted_invoice_url,
+                  COALESCE(u.name, u.email), ic.client_id,
+                  EXTRACT(DAY FROM (now() - ic.due_date))::int
+           FROM public.invoice_cache ic
+           LEFT JOIN public.users u ON u.id = ic.client_id
+           WHERE ic.agency_id = %s AND ic.status = 'open' AND ic.due_date IS NOT NULL
+             AND ic.due_date < now() - make_interval(days => %s)
+           ORDER BY ic.due_date ASC
+           LIMIT %s''',
+        (agency_id, days, limit),
+    )
+    out = []
+    for number, amount_due, currency, due, url, cname, cid, dover in cur.fetchall():
+        out.append({
+            'client_name': cname or 'Unassigned',
+            'client_id': cid,
+            'invoice_number': number,
+            'amount_due_minor': int(amount_due),
+            'amount_due': portal.format_money(amount_due, currency),
+            'currency': currency,
+            'days_overdue': dover,
+            'due_date': _iso(due),
+            'hosted_invoice_url': url,
+        })
+    return {'stripe_connected': True, 'days_overdue_filter': days, 'count': len(out),
+            'invoices': out, 'synced_at': _agency_synced_at(cur, agency_id)}
+
+
+def tool_get_client_billing_summary(cur, agency_id, args):
+    if not _billing_account(cur, agency_id):
+        return _billing_not_connected()
+    client_id = args.get('client_id')
+    client_name = (args.get('client_name') or '').strip()
+    if client_id is not None:
+        _require_client(cur, agency_id, client_id)
+        cid = int(client_id)
+    elif client_name:
+        cur.execute(
+            "SELECT id FROM public.users WHERE agency_id = %s AND role = 'client' "
+            "AND (name ILIKE %s OR email ILIKE %s) ORDER BY COALESCE(name, email) LIMIT 2",
+            (agency_id, f'%{client_name}%', f'%{client_name}%'),
+        )
+        matches = cur.fetchall()
+        if not matches:
+            raise ToolError(f'No client matching "{client_name}"')
+        if len(matches) > 1:
+            raise ToolError(f'"{client_name}" matches multiple clients — use client_id from list_clients')
+        cid = matches[0][0]
+    else:
+        raise ToolError('provide client_id or client_name')
+
+    cur.execute('SELECT COALESCE(name, email) FROM public.users WHERE id = %s', (cid,))
+    name_row = cur.fetchone()
+    name = name_row[0] if name_row else None
+    cur.execute(
+        "SELECT currency, SUM(amount_due), COUNT(*) FROM public.invoice_cache "
+        "WHERE agency_id = %s AND client_id = %s AND status = 'open' GROUP BY currency",
+        (agency_id, cid),
+    )
+    outstanding = [{'currency': c, 'amount_minor': int(s), 'amount': portal.format_money(s, c),
+                    'open_invoices': n} for c, s, n in cur.fetchall()]
+    cur.execute("SELECT MIN(due_date) FROM public.invoice_cache WHERE agency_id = %s AND client_id = %s AND status = 'open'",
+                (agency_id, cid))
+    oldest = cur.fetchone()[0]
+    cur.execute("SELECT MAX(finalized_at) FROM public.invoice_cache WHERE agency_id = %s AND client_id = %s AND status = 'paid'",
+                (agency_id, cid))
+    last_paid = cur.fetchone()[0]
+    return {'stripe_connected': True, 'client_id': cid, 'client_name': name,
+            'outstanding': outstanding, 'open_invoice_count': sum(o['open_invoices'] for o in outstanding),
+            'oldest_unpaid_due': _iso(oldest), 'last_payment_at': _iso(last_paid),
+            'synced_at': _agency_synced_at(cur, agency_id)}
+
+
+def tool_get_revenue_summary(cur, agency_id, args):
+    if not _billing_account(cur, agency_id):
+        return _billing_not_connected()
+    period = args.get('period') or 'this_month'
+    if period not in _PERIOD_SQL:
+        raise ToolError('period must be one of: this_month, last_month, last_90_days, ytd')
+    cond = _PERIOD_SQL[period]  # constant from our dict — not user text
+    cur.execute(
+        f"SELECT currency, SUM(amount_paid) FROM public.invoice_cache ic "
+        f"WHERE agency_id = %s AND status = 'paid' AND ({cond}) GROUP BY currency",
+        (agency_id,),
+    )
+    paid = {c: int(s) for c, s in cur.fetchall()}
+    cur.execute("SELECT currency, SUM(amount_due) FROM public.invoice_cache WHERE agency_id = %s AND status = 'open' GROUP BY currency",
+                (agency_id,))
+    outstanding = {c: int(s) for c, s in cur.fetchall()}
+    currencies = sorted(set(paid) | set(outstanding))
+    breakdown = [{
+        'currency': c,
+        'paid_minor': paid.get(c, 0), 'paid': portal.format_money(paid.get(c, 0), c),
+        'outstanding_minor': outstanding.get(c, 0), 'outstanding': portal.format_money(outstanding.get(c, 0), c),
+    } for c in currencies]
+    return {'stripe_connected': True, 'period': period, 'by_currency': breakdown,
+            'synced_at': _agency_synced_at(cur, agency_id)}
+
+
+def tool_list_unbilled_clients(cur, agency_id, args):
+    if not _billing_account(cur, agency_id):
+        return _billing_not_connected()
+    period = args.get('period') or 'last_90_days'
+    if period not in _PERIOD_SQL:
+        raise ToolError('period must be one of: this_month, last_month, last_90_days, ytd')
+    cond = _PERIOD_SQL[period]
+    cur.execute(
+        f'''SELECT u.id, COALESCE(u.name, u.email), u.email
+            FROM public.users u
+            WHERE u.agency_id = %s AND u.role = 'client'
+              AND NOT EXISTS (
+                  SELECT 1 FROM public.invoice_cache ic
+                  WHERE ic.client_id = u.id AND ic.agency_id = %s AND ({cond}))
+            ORDER BY COALESCE(u.name, u.email)''',
+        (agency_id, agency_id),
+    )
+    rows = cur.fetchall()
+    return {'stripe_connected': True, 'period': period, 'count': len(rows),
+            'unbilled_clients': [{'client_id': r[0], 'name': r[1], 'email': r[2]} for r in rows],
+            'synced_at': _agency_synced_at(cur, agency_id)}
+
+
 def _form_folder_ok(cur, agency_id, parent_id):
     if parent_id is None:
         return True
@@ -1875,6 +2033,58 @@ TOOLS = [
                 'item_id': {'type': 'integer', 'description': 'The vault file item id (from get_vault).'},
             },
             'required': ['client_id', 'item_id'],
+            'additionalProperties': False,
+        },
+    },
+    {
+        'name': 'get_overdue_invoices',
+        'description': "List the agency's overdue (open, past-due) invoices from Stripe billing, most-overdue first. Each row has the client name, invoice number, amount (minor units + formatted), currency, days overdue and hosted invoice URL. Read-only, cached. If Stripe isn't connected you get a clear not-connected message, not an empty list.",
+        'handler': tool_get_overdue_invoices,
+        'inputSchema': {
+            'type': 'object',
+            'properties': {
+                'days_overdue': {'type': 'integer', 'description': 'Only invoices at least this many days past due (default 0).'},
+                'limit': {'type': 'integer', 'description': 'Max results, default 50, max 200.'},
+            },
+            'additionalProperties': False,
+        },
+    },
+    {
+        'name': 'get_client_billing_summary',
+        'description': "Billing summary for one client: outstanding total per currency, count of open invoices, oldest unpaid due date, and last payment date. Identify the client by client_id or client_name. Read-only, cached.",
+        'handler': tool_get_client_billing_summary,
+        'inputSchema': {
+            'type': 'object',
+            'properties': {
+                'client_id': {'type': 'integer', 'description': 'The client id (preferred).'},
+                'client_name': {'type': 'string', 'description': 'Client name to search (must be unambiguous).'},
+            },
+            'additionalProperties': False,
+        },
+    },
+    {
+        'name': 'get_revenue_summary',
+        'description': "Paid vs outstanding totals across the agency's Stripe billing for a period, broken down per currency (amounts never summed across currencies). Read-only, cached.",
+        'handler': tool_get_revenue_summary,
+        'inputSchema': {
+            'type': 'object',
+            'properties': {
+                'period': {'type': 'string', 'enum': ['this_month', 'last_month', 'last_90_days', 'ytd'],
+                           'description': 'Reporting period (default this_month).'},
+            },
+            'additionalProperties': False,
+        },
+    },
+    {
+        'name': 'list_unbilled_clients',
+        'description': "Clients with no invoice finalized in the period — the 'who haven't we billed' query. Read-only, cached.",
+        'handler': tool_list_unbilled_clients,
+        'inputSchema': {
+            'type': 'object',
+            'properties': {
+                'period': {'type': 'string', 'enum': ['this_month', 'last_month', 'last_90_days', 'ytd'],
+                           'description': 'Period to check for invoices (default last_90_days).'},
+            },
             'additionalProperties': False,
         },
     },
