@@ -13,6 +13,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 from werkzeug.middleware.proxy_fix import ProxyFix
 import stripe
+import threading
 
 ATTACHMENTS_BUCKET = 'message_attatchments'
 VAULT_BUCKET = 'vault_documents'
@@ -837,6 +838,7 @@ _vault_schema_ready = False
 _forms_schema_ready = False
 _branding_schema_ready = False
 _billing_schema_ready = False
+_notify_schema_ready = False
 
 
 def external_url(endpoint, **values):
@@ -1101,6 +1103,105 @@ def ensure_billing_schema(conn):
     _billing_schema_ready = True
 
 
+def ensure_notify_schema(conn):
+    """Per-agency email notifications via the agency's own Resend account."""
+    global _notify_schema_ready
+    if _notify_schema_ready:
+        return
+    with conn.cursor() as cursor:
+        cursor.execute('ALTER TABLE public.users ADD COLUMN IF NOT EXISTS resend_api_key text')
+        cursor.execute('ALTER TABLE public.users ADD COLUMN IF NOT EXISTS notify_from_email text')
+    _notify_schema_ready = True
+
+
+def _notify_base_url():
+    return (os.environ.get('APP_URL') or os.environ.get('PORTAL_BASE_URL') or request.url_root).rstrip('/')
+
+
+def _notification_email_html(agency_name, logo_url, grad_start, grad_end, portal_url):
+    gradient = f'linear-gradient(135deg, {grad_start}, {grad_end})'
+    header_inner = (
+        f'<img src="{logo_url}" alt="{agency_name}" style="max-height:44px;max-width:200px;">'
+        if logo_url else
+        f'<span style="color:#ffffff;font-size:20px;font-weight:700;">{agency_name}</span>'
+    )
+    return f'''\
+<div style="background:#f4f6f8;padding:24px 12px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+  <div style="max-width:480px;margin:0 auto;background:#ffffff;border:1px solid #e6eaef;border-radius:16px;overflow:hidden;">
+    <div style="background:{grad_end};background:{gradient};padding:24px;text-align:center;">{header_inner}</div>
+    <div style="padding:30px 28px;text-align:center;">
+      <h1 style="margin:0 0 8px;font-size:20px;color:#0b1220;">You have a new message</h1>
+      <p style="margin:0 0 24px;font-size:15px;line-height:1.5;color:#5b6673;">
+        There's a new message waiting for you on the <strong>{agency_name}</strong> portal.
+      </p>
+      <a href="{portal_url}" style="display:inline-block;background:{grad_end};background:{gradient};color:#ffffff;text-decoration:none;font-weight:700;font-size:15px;padding:13px 30px;border-radius:999px;">View message →</a>
+    </div>
+    <div style="padding:16px;text-align:center;color:#9aa4b0;font-size:12px;border-top:1px solid #eef1f4;">
+      {agency_name} · powered by Pixiware
+    </div>
+  </div>
+</div>'''
+
+
+def _send_message_notification(agency_id, client_id, base_url):
+    """Email a client (via the agency's Resend key) that a new message is
+    waiting. Best-effort, runs in a background thread. Never raises."""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    'SELECT COALESCE(name, email), resend_api_key, notify_from_email, '
+                    'brand_grad_start, brand_grad_end, brand_logo_path '
+                    'FROM public.users WHERE id = %s',
+                    (agency_id,),
+                )
+                agency = cursor.fetchone()
+                if not agency:
+                    return
+                agency_name, api_key, from_email = agency[0], agency[1], agency[2]
+                if not api_key or not from_email:
+                    return  # notifications not configured for this agency
+                grad_start = agency[3] or '#a3e635'
+                grad_end = agency[4] or '#06b6d4'
+                has_logo = bool(agency[5])
+
+                cursor.execute('SELECT email FROM public.users WHERE id = %s', (client_id,))
+                crow = cursor.fetchone()
+        if not crow or not crow[0]:
+            return
+        client_email = crow[0]
+
+        logo_url = f'{base_url}/brand/{agency_id}/logo' if has_logo else None
+        html = _notification_email_html(agency_name, logo_url, grad_start, grad_end, base_url)
+        payload = {
+            'from': f'{agency_name} <{from_email}>',
+            'to': [client_email],
+            'subject': f'New message on the {agency_name} portal',
+            'html': html,
+        }
+        req = Request(
+            'https://api.resend.com/emails',
+            data=json.dumps(payload).encode('utf-8'),
+            method='POST',
+            headers={'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'},
+        )
+        with urlopen(req) as response:
+            response.read()
+    except HTTPError as exc:
+        # Log the status, never the payload or key.
+        print(f'notification email failed (agency {agency_id}): HTTP {exc.code}')
+    except Exception as exc:  # noqa: BLE001
+        print(f'notification email error (agency {agency_id}): {type(exc).__name__}')
+
+
+def enqueue_message_notification(agency_id, client_id, base_url):
+    threading.Thread(
+        target=_send_message_notification,
+        args=(agency_id, client_id, base_url),
+        daemon=True,
+    ).start()
+
+
 def _logo_is_transparent(img):
     """True if the image already has meaningful transparency."""
     if 'A' not in img.getbands():
@@ -1312,6 +1413,7 @@ def get_db_connection():
         ensure_forms_schema(conn)
         ensure_branding_schema(conn)
         ensure_billing_schema(conn)
+        ensure_notify_schema(conn)
     except psycopg.Error as exc:
         conn.rollback()
         print(f'Could not ensure database schema: {exc}')
@@ -1419,12 +1521,18 @@ def settings():
             pro_user = get_user_pro_status(cursor, session.get('user_id'))
             cursor.execute(
                 'SELECT role, agency_id, brand_grad_start, brand_grad_end, '
-                'brand_hero_lead, brand_hero_words FROM public.users WHERE id = %s',
+                'brand_hero_lead, brand_hero_words, resend_api_key, notify_from_email '
+                'FROM public.users WHERE id = %s',
                 (session.get('user_id'),),
             )
-            row = cursor.fetchone() or (None, None, None, None, None, None)
+            row = cursor.fetchone() or (None,) * 8
             role, agency_id = row[0], row[1]
             is_agency = is_agency_role(role)
+            notify = {
+                'configured': bool(row[6] and row[7]),
+                'from_email': row[7] or '',
+                'has_key': bool(row[6]),
+            }
             # Agencies (they pay Pixiware) and Pixiware's own clients see pricing;
             # clients of any other agency do not.
             show_pricing = is_agency or (role == 'client' and agency_id == ADMIN_ACC_ID)
@@ -1473,7 +1581,40 @@ def settings():
         mcp_url=f'{base}/mcp',
         billing=billing,
         billing_rows=billing_rows,
+        notify=notify,
     )
+
+
+@app.route('/settings/notifications', methods=['POST'])
+def update_notifications():
+    user_id = session.get('user_id')
+    if not user_id:
+        return redirect(url_for('sign_in'))
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            if not is_agency_role(get_user_role(cursor, user_id)):
+                abort(403)
+            from_email = (request.form.get('from_email') or '').strip() or None
+            api_key = (request.form.get('resend_api_key') or '').strip()
+            if request.form.get('disconnect'):
+                cursor.execute(
+                    'UPDATE public.users SET resend_api_key = NULL, notify_from_email = NULL WHERE id = %s',
+                    (user_id,),
+                )
+                return redirect(url_for('settings', notify='off'))
+            # Only overwrite the stored key when a new one is supplied, so saving
+            # the from-address again doesn't wipe the key.
+            if api_key:
+                cursor.execute(
+                    'UPDATE public.users SET resend_api_key = %s, notify_from_email = %s WHERE id = %s',
+                    (api_key, from_email, user_id),
+                )
+            else:
+                cursor.execute(
+                    'UPDATE public.users SET notify_from_email = %s WHERE id = %s',
+                    (from_email, user_id),
+                )
+    return redirect(url_for('settings', notify='saved'))
 
 
 @app.route('/settings/branding', methods=['POST'])
@@ -1838,6 +1979,7 @@ def chat_send(chat_id):
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
 
+    notify_client = False
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
             if not can_message(user_id, chat_id, cursor):
@@ -1863,7 +2005,11 @@ def chat_send(chat_id):
             )
             message_id = cursor.fetchone()[0]
             clear_user_typing(cursor, user_id)
+            # Email the client only when the agency is the sender.
+            notify_client = is_agency_role(get_user_role(cursor, user_id))
 
+    if notify_client:
+        enqueue_message_notification(user_id, chat_id, _notify_base_url())
     return jsonify({'ok': True, 'id': message_id})
 
 @app.route('/chat/<int:chat_id>/message/<int:message_id>/delete', methods=['POST'])
