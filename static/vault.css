@@ -182,14 +182,16 @@
     -webkit-user-select: none;
     -webkit-touch-callout: none;
     touch-action: none;
-    transition: background 0.12s ease, box-shadow 0.12s ease;
+    transition: left 0.18s cubic-bezier(0.2, 0.7, 0.2, 1), top 0.18s cubic-bezier(0.2, 0.7, 0.2, 1), background 0.12s ease, box-shadow 0.12s ease;
 }
 .vault_item:hover { background: rgba(120, 120, 120, 0.08); }
 .vault_item--selected {
     background: rgba(16, 185, 129, 0.12);
     box-shadow: inset 0 0 0 1px rgba(16, 185, 129, 0.5);
 }
-.vault_item--dragging { opacity: 0.9; z-index: 50; }
+/* No position transition while actively dragging — the item must track the
+   pointer 1:1. The transition re-enables on release so it glides into its slot. */
+.vault_item--dragging { opacity: 0.9; z-index: 50; transition: none; }
 .vault_item--drop-target {
     background: rgba(16, 185, 129, 0.18);
     box-shadow: inset 0 0 0 1px var(--color-emerald);

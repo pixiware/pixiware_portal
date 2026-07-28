@@ -348,7 +348,9 @@
         el.addEventListener('pointerdown', (e) => {
             if (e.button === 2) return;
             const startX = e.clientX, startY = e.clientY;
-            const origX = item.x, origY = item.y;
+            // Drag from where the item is actually rendered (its grid slot), NOT
+            // its stored x/y — otherwise it teleports to the old coords on grab.
+            const origX = parseFloat(el.style.left) || 0, origY = parseFloat(el.style.top) || 0;
             let moved = false, curX = origX, curY = origY;
 
             try { el.setPointerCapture(e.pointerId); } catch (_) {}
@@ -383,7 +385,7 @@
                     clearDropHighlight();
                     const target = dropTargetUnder(ev, item.id);
                     if (target && target.parentId !== item.parent_id) moveItem(item, { parent_id: target.parentId });
-                    else render(); // items auto-arrange in a grid, so snap back into place
+                    else layoutGrid(); // glide the item back into its grid slot (no full rebuild)
                     return;
                 }
                 // a tap: second tap on the same item opens it, otherwise selects it
