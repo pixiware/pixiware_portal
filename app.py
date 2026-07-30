@@ -22,35 +22,39 @@ MAX_LOGO_BYTES = 5 * 1024 * 1024
 DEFAULT_HERO_LEAD = "Let's make your site"
 DEFAULT_HERO_WORDS = ['special', 'beautiful', 'stand-out', 'different']
 MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
-MAX_VAULT_BYTES = 25 * 1024 * 1024
+MAX_VAULT_BYTES = 100 * 1024 * 1024
 ALLOWED_ATTACHMENT_TYPES = {
-    'image/jpeg',
-    'image/png',
-    'image/gif',
-    'image/webp',
-    'application/pdf',
-    'text/plain',
-    'text/csv',
-    'application/zip',
-    'application/msword',
+    # images
+    'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/svg+xml',
+    'image/bmp', 'image/tiff', 'image/heic', 'image/avif',
+    # video
+    'video/mp4', 'video/webm', 'video/quicktime', 'video/ogg', 'video/x-msvideo',
+    # audio
+    'audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/mp4',
+    # text
+    'text/plain', 'text/csv', 'text/markdown',
+    # documents / archives
+    'application/pdf', 'application/zip', 'application/msword',
     'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
     'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     'application/vnd.openxmlformats-officedocument.presentationml.presentation',
 }
 ALLOWED_ATTACHMENT_EXTENSIONS = {
-    '.jpg', '.jpeg', '.png', '.gif', '.webp', '.pdf', '.txt', '.csv', '.zip',
+    '.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.bmp', '.tif', '.tiff', '.heic', '.avif',
+    '.mp4', '.webm', '.mov', '.ogv', '.avi',
+    '.mp3', '.wav', '.ogg', '.m4a',
+    '.pdf', '.txt', '.md', '.csv', '.zip',
     '.doc', '.docx', '.xlsx', '.pptx',
 }
 EXTENSION_MIME_MAP = {
-    '.jpg': 'image/jpeg',
-    '.jpeg': 'image/jpeg',
-    '.png': 'image/png',
-    '.gif': 'image/gif',
-    '.webp': 'image/webp',
-    '.pdf': 'application/pdf',
-    '.txt': 'text/plain',
-    '.csv': 'text/csv',
-    '.zip': 'application/zip',
+    '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.gif': 'image/gif',
+    '.webp': 'image/webp', '.svg': 'image/svg+xml', '.bmp': 'image/bmp',
+    '.tif': 'image/tiff', '.tiff': 'image/tiff', '.heic': 'image/heic', '.avif': 'image/avif',
+    '.mp4': 'video/mp4', '.webm': 'video/webm', '.mov': 'video/quicktime',
+    '.ogv': 'video/ogg', '.avi': 'video/x-msvideo',
+    '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.ogg': 'audio/ogg', '.m4a': 'audio/mp4',
+    '.pdf': 'application/pdf', '.txt': 'text/plain', '.md': 'text/markdown',
+    '.csv': 'text/csv', '.zip': 'application/zip',
     '.doc': 'application/msword',
     '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
     '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -374,7 +378,7 @@ def store_vault_bytes(data, filename, reported_mime, client_id):
     if not data:
         raise ValueError('empty file')
     if len(data) > MAX_VAULT_BYTES:
-        raise ValueError('file is too large (max 25MB)')
+        raise ValueError('file is too large (max 100MB)')
 
     mime = resolve_attachment_mime(filename, reported_mime)
     safe_name = secure_filename(filename) or 'file'

@@ -1160,7 +1160,7 @@ def _fetch_url_bytes(url):
         with urllib.request.urlopen(req, timeout=25) as r:
             data = r.read(cap + 1)
             if len(data) > cap:
-                raise ToolError('file is too large (max 25MB)')
+                raise ToolError('file is too large (max 100MB)')
             name = None
             cd = r.headers.get('Content-Disposition', '') or ''
             if 'filename=' in cd:
@@ -1180,8 +1180,14 @@ def tool_upload_vault_file(cur, agency_id, args):
     filename = (args.get('filename') or '').strip()
     url = (args.get('url') or '').strip()
     b64 = args.get('content_base64')
+    text = args.get('content_text')
 
-    if b64:
+    if text is not None:
+        # Raw text — no base64 needed (for .txt/.md/.csv and similar).
+        data = text.encode('utf-8')
+        if not filename:
+            raise ToolError('filename is required when using content_text')
+    elif b64:
         try:
             data = base64.b64decode(b64, validate=True)
         except Exception:
@@ -1193,7 +1199,7 @@ def tool_upload_vault_file(cur, agency_id, args):
         if not filename:
             filename = derived or 'file'
     else:
-        raise ToolError('provide either url or content_base64')
+        raise ToolError('provide content_text, content_base64, or url')
 
     parent_id = args.get('parent_id')
     if parent_id is not None:
@@ -1896,10 +1902,12 @@ TOOLS = [
     {
         'name': 'upload_vault_file',
         'description': (
-            "Upload a file into a client's PixiVault. Provide the file either as `url` (the server "
-            "downloads it) or as base64 in `content_base64` with a `filename`. Optionally place it in "
-            "a folder with `parent_id`. Returns the new item_id — pass that to move_vault_item to "
-            "rearrange it. Allowed types: images (jpg/png/gif/webp), pdf, txt, csv, zip, doc, docx, xlsx, pptx. Max 25MB."
+            "Upload a file into a client's PixiVault. Provide the content ONE of three ways: "
+            "`content_text` (raw text for .txt/.md/.csv — no encoding needed), `content_base64` "
+            "(base64 bytes, for images/video/binary), or `url` (the server downloads it). Give a "
+            "`filename` with the right extension (required for content_text/content_base64). Optionally "
+            "place it in a folder with `parent_id`. Returns the new item_id — pass it to move_vault_item "
+            "to rearrange. Allowed types: images, video, audio, pdf, txt, md, csv, zip, doc/docx/xlsx/pptx. Max 100MB."
         ),
         'handler': tool_upload_vault_file,
         'annotations': {'title': 'Upload vault file', 'readOnlyHint': False, 'destructiveHint': False},
@@ -1907,9 +1915,10 @@ TOOLS = [
             'type': 'object',
             'properties': {
                 'client_id': {'type': 'integer', 'description': 'The client whose vault to upload to.'},
-                'url': {'type': 'string', 'description': 'http(s) URL of the file to fetch and store.'},
-                'content_base64': {'type': 'string', 'description': 'Base64-encoded file bytes (alternative to url).'},
-                'filename': {'type': 'string', 'description': 'File name incl. extension (required with content_base64; sets the type).'},
+                'content_text': {'type': 'string', 'description': 'Raw text content (for text files) — no base64 needed.'},
+                'content_base64': {'type': 'string', 'description': 'Base64-encoded bytes (for images/video/binary).'},
+                'url': {'type': 'string', 'description': 'http(s) URL of a file to fetch and store.'},
+                'filename': {'type': 'string', 'description': 'File name incl. extension (required with content_text/content_base64; sets the type).'},
                 'name': {'type': 'string', 'description': 'Optional display name (defaults to filename).'},
                 'mime': {'type': 'string', 'description': 'Optional MIME type override.'},
                 'parent_id': {'type': 'integer', 'description': 'Optional vault folder id to place the file in.'},
