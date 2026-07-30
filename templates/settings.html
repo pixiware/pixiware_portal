@@ -29,6 +29,7 @@
                 {% if is_agency %}<button type="button" class="settings_nav__item" data-panel="connect">Connect AI</button>{% endif %}
                 {% if is_agency %}<button type="button" class="settings_nav__item" data-panel="billing">Billing</button>{% endif %}
                 {% if is_agency %}<button type="button" class="settings_nav__item" data-panel="notifications">Notifications</button>{% endif %}
+                {% if is_agency %}<button type="button" class="settings_nav__item" data-panel="terms">Terms</button>{% endif %}
                 {% if show_pricing %}<button type="button" class="settings_nav__item" data-panel="pricing">Pricing</button>{% endif %}
             </nav>
 
@@ -212,6 +213,52 @@
                     </form>
                     {% endif %}
                 </section>
+
+                <section class="settings_section settings_panel-view" id="panel-terms" hidden>
+                    <h2>Terms &amp; policies</h2>
+                    <p class="settings_section__hint">
+                        Add documents (Terms &amp; Conditions, Privacy Policy, Data Policy…) that every
+                        client must read and accept before using their portal. New clients accept at sign-up;
+                        existing clients are asked on their next login. Each acceptance is timestamped.
+                    </p>
+                    {% if request.args.get('doc') == 'saved' %}<p class="flash flash--ok">✓ Document saved</p>{% endif %}
+                    {% if request.args.get('doc') == 'deleted' %}<p class="flash flash--err">Document deleted.</p>{% endif %}
+                    {% if request.args.get('doc') == 'empty' %}<p class="flash flash--err">A title and body are required.</p>{% endif %}
+
+                    {% if documents %}
+                    <div style="margin-bottom:22px;display:flex;flex-direction:column;gap:8px;">
+                        {% for d in documents %}
+                        <div style="display:flex;align-items:center;gap:10px;border:1px solid var(--color-border);border-radius:10px;padding:10px 12px;">
+                            <span style="color:var(--color-text-muted);font-size:.8rem;font-weight:700;width:22px;">{{ loop.index }}</span>
+                            <span style="flex:1;font-weight:600;">{{ d.title }}</span>
+                            <form method="post" action="{{ url_for('documents_move', doc_id=d.id) }}" style="display:inline;"><input type="hidden" name="dir" value="up"><button class="file_picker__btn" style="padding:.35rem .55rem;" title="Move up"{% if loop.first %} disabled{% endif %}>↑</button></form>
+                            <form method="post" action="{{ url_for('documents_move', doc_id=d.id) }}" style="display:inline;"><input type="hidden" name="dir" value="down"><button class="file_picker__btn" style="padding:.35rem .55rem;" title="Move down"{% if loop.last %} disabled{% endif %}>↓</button></form>
+                            <a class="file_picker__btn" style="padding:.35rem .7rem;text-decoration:none;" href="{{ url_for('settings', edit=d.id) }}#panel-terms">Edit</a>
+                            <form method="post" action="{{ url_for('documents_delete', doc_id=d.id) }}" style="display:inline;" onsubmit="return confirm('Delete “{{ d.title }}”? Clients\' recorded acceptances of it are also removed.');"><button class="file_picker__btn" style="padding:.35rem .55rem;color:#b12727;border-color:#f0c9c9;" title="Delete">✕</button></form>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    {% endif %}
+
+                    <form method="post" action="{{ url_for('documents_save') }}" class="brand_form">
+                        <h3 style="margin:0;font-size:.95rem;">{% if edit_doc %}Edit document{% else %}Add a document{% endif %}</h3>
+                        {% if edit_doc %}<input type="hidden" name="id" value="{{ edit_doc.id }}">{% endif %}
+                        <div class="field">
+                            <span class="field__label">Title</span>
+                            <input class="field__input" type="text" name="title" maxlength="200" required
+                                   value="{{ edit_doc.title if edit_doc else '' }}" placeholder="Terms &amp; Conditions">
+                        </div>
+                        <div class="field">
+                            <span class="field__label">Document text</span>
+                            <textarea class="field__input" name="body" rows="12" required
+                                      placeholder="Paste your policy text here…" style="resize:vertical;font-family:inherit;line-height:1.5;">{{ edit_doc.body if edit_doc else '' }}</textarea>
+                        </div>
+                        <div style="display:flex;gap:10px;">
+                            <button type="submit" class="btn_primary">{% if edit_doc %}Save changes{% else %}Add document{% endif %}</button>
+                            {% if edit_doc %}<a class="file_picker__btn" style="text-decoration:none;" href="{{ url_for('settings') }}#panel-terms">Cancel</a>{% endif %}
+                        </div>
+                    </form>
+                </section>
                 {% endif %}
 
                 {% if show_pricing %}
@@ -279,6 +326,22 @@
                     });
                 });
             });
+
+            // Open the relevant panel from the URL (hash or query flags), so an
+            // "Edit" link or a post-save redirect lands on the right section.
+            (function () {
+                const params = new URLSearchParams(location.search);
+                const paramPanel = params.has('doc') || params.has('edit') ? 'terms'
+                    : params.has('notify') ? 'notifications'
+                    : params.has('billing') ? 'billing'
+                    : params.has('branding') ? 'branding' : null;
+                const hashPanel = (location.hash || '').replace('#panel-', '') || null;
+                const target = paramPanel || hashPanel;
+                if (target) {
+                    const btn = document.querySelector(`.settings_nav__item[data-panel="${target}"]`);
+                    if (btn) btn.click();
+                }
+            })();
         </script>
         <script>
             async function startBillingRedirect(button, errorEl, url) {

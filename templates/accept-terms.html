@@ -1,0 +1,111 @@
+<html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+        <meta name="theme-color" content="#10b981">
+        <title>Review &amp; accept</title>
+        <link rel="stylesheet" href="{{ url_for('static', filename='base_styles.css') }}">
+        <link rel="stylesheet" href="{{ url_for('static', filename='branding.css') }}">
+        {% include '_brand.html' %}
+        <style>
+            .terms_wrap { max-width: 720px; margin: 0 auto; padding: 28px max(1rem, env(safe-area-inset-left)) 48px; }
+            .terms_head { text-align: center; margin-bottom: 20px; }
+            .terms_head img { max-height: 46px; margin: 0 auto 14px; display: block; }
+            .terms_head h1 { font-size: 1.5rem; margin: 0 0 4px; }
+            .terms_head p { color: var(--color-text-muted); margin: 0; font-size: .92rem; }
+            .terms_progress { text-align: center; font-size: .75rem; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--color-text-muted); margin-bottom: 12px; }
+            .terms_card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); box-shadow: var(--shadow-md); overflow: hidden; }
+            .terms_card__bar { height: 6px; background: var(--gradient-signature); }
+            .terms_card__title { font-size: 1.15rem; font-weight: 700; padding: 20px 24px 0; margin: 0; }
+            .terms_body { padding: 14px 24px; max-height: 52vh; overflow-y: auto; white-space: pre-wrap; font-size: .9rem; line-height: 1.6; color: #2b3644; }
+            .terms_foot { border-top: 1px solid var(--color-border); padding: 16px 24px 20px; }
+            .terms_check { display: flex; align-items: flex-start; gap: 10px; font-size: .9rem; color: var(--color-text); cursor: pointer; }
+            .terms_check input { width: 18px; height: 18px; margin-top: 1px; accent-color: var(--color-emerald); flex: 0 0 auto; }
+            .terms_actions { margin-top: 16px; display: flex; justify-content: flex-end; }
+            .terms_btn { padding: 12px 26px; border: none; border-radius: 999px; background: var(--gradient-signature); color: #fff; font-weight: 700; font-size: .95rem; cursor: pointer; }
+            .terms_btn:disabled { opacity: .5; cursor: not-allowed; }
+            .terms_scrollhint { font-size: .78rem; color: var(--color-text-muted); text-align: center; padding: 0 24px 10px; }
+        </style>
+    </head>
+    <body>
+        <main class="terms_wrap">
+            <div class="terms_head">
+                {% if brand and brand.logo_url %}<img src="{{ brand.logo_url }}" alt="">{% endif %}
+                <h1>Before you continue</h1>
+                <p>Please read and accept the following to use your portal.</p>
+            </div>
+            <div class="terms_progress" id="terms-progress"></div>
+            <div class="terms_card">
+                <div class="terms_card__bar"></div>
+                <h2 class="terms_card__title" id="terms-title"></h2>
+                <div class="terms_body" id="terms-body"></div>
+                <p class="terms_scrollhint" id="terms-scrollhint" hidden>Scroll to the bottom to continue.</p>
+                <div class="terms_foot">
+                    <label class="terms_check">
+                        <input type="checkbox" id="terms-agree">
+                        <span id="terms-agree-label">I have read and agree to this document.</span>
+                    </label>
+                    <div class="terms_actions">
+                        <button type="button" class="terms_btn" id="terms-continue" disabled>Accept &amp; continue</button>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <script>
+            const DOCS = {{ documents | tojson }};
+            let idx = 0;
+            const titleEl = document.getElementById('terms-title');
+            const bodyEl = document.getElementById('terms-body');
+            const progressEl = document.getElementById('terms-progress');
+            const agree = document.getElementById('terms-agree');
+            const cont = document.getElementById('terms-continue');
+            const scrollhint = document.getElementById('terms-scrollhint');
+
+            function render() {
+                const doc = DOCS[idx];
+                progressEl.textContent = `Document ${idx + 1} of ${DOCS.length}`;
+                titleEl.textContent = doc.title;
+                bodyEl.textContent = doc.body;      // textContent = no HTML injection
+                bodyEl.scrollTop = 0;
+                agree.checked = false;
+                updateButton();
+                // Require scrolling to the end before accepting (if the doc is long).
+                const needsScroll = bodyEl.scrollHeight > bodyEl.clientHeight + 8;
+                scrollhint.hidden = !needsScroll;
+                agree.disabled = needsScroll;
+            }
+
+            function updateButton() { cont.disabled = !agree.checked; }
+
+            bodyEl.addEventListener('scroll', () => {
+                if (bodyEl.scrollTop + bodyEl.clientHeight >= bodyEl.scrollHeight - 12) {
+                    agree.disabled = false;
+                    scrollhint.hidden = true;
+                }
+            });
+            agree.addEventListener('change', updateButton);
+
+            cont.addEventListener('click', async () => {
+                const doc = DOCS[idx];
+                cont.disabled = true;
+                cont.textContent = 'Saving…';
+                try {
+                    const res = await fetch(`/accept-terms/${doc.id}`, { method: 'POST' });
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.error || 'Could not save');
+                    idx += 1;
+                    if (idx >= DOCS.length) { window.location.assign('{{ url_for("dashboard") }}'); return; }
+                    cont.textContent = 'Accept & continue';
+                    render();
+                } catch (e) {
+                    cont.disabled = false;
+                    cont.textContent = 'Accept & continue';
+                    alert(e.message);
+                }
+            });
+
+            render();
+        </script>
+    </body>
+</html>
