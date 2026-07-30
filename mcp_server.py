@@ -1565,6 +1565,139 @@ def tool_list_unbilled_clients(cur, agency_id, args):
             'synced_at': _agency_synced_at(cur, agency_id)}
 
 
+# --------------------------------------------------------------------------- #
+# Policy documents (T&Cs / privacy / ... ) + acceptance audit — agency-scoped
+# --------------------------------------------------------------------------- #
+def _doc_counts(cur, agency_id, doc_id):
+    cur.execute('SELECT COUNT(*) FROM public.document_acceptances WHERE document_id = %s', (doc_id,))
+    accepted = cur.fetchone()[0]
+    cur.execute(
+        '''SELECT COUNT(*) FROM public.users u
+           WHERE u.agency_id = %s AND u.role = 'client'
+             AND NOT EXISTS (SELECT 1 FROM public.document_acceptances a
+                             WHERE a.document_id = %s AND a.client_id = u.id)''',
+        (agency_id, doc_id),
+    )
+    pending = cur.fetchone()[0]
+    return accepted, pending
+
+
+def _require_document(cur, agency_id, doc_id):
+    cur.execute('SELECT 1 FROM public.agency_documents WHERE id = %s AND agency_id = %s', (doc_id, agency_id))
+    if not cur.fetchone():
+        raise ToolError(f'Document {doc_id} not found for your agency')
+
+
+def tool_list_documents(cur, agency_id, args):
+    docs = portal.get_agency_documents(cur, agency_id)
+    out = []
+    for d in docs:
+        accepted, pending = _doc_counts(cur, agency_id, d['id'])
+        out.append({'document_id': d['id'], 'title': d['title'], 'position': d['position'],
+                    'accepted_count': accepted, 'pending_count': pending})
+    return {'count': len(out), 'documents': out}
+
+
+def tool_get_document(cur, agency_id, args):
+    doc_id = _need_int(args, 'document_id')
+    cur.execute('SELECT id, title, body, position, created_at FROM public.agency_documents WHERE id = %s AND agency_id = %s',
+                (doc_id, agency_id))
+    r = cur.fetchone()
+    if not r:
+        raise ToolError(f'Document {doc_id} not found for your agency')
+    accepted, pending = _doc_counts(cur, agency_id, doc_id)
+    return {'document_id': r[0], 'title': r[1], 'body': r[2], 'position': r[3],
+            'created_at': _iso(r[4]), 'accepted_count': accepted, 'pending_count': pending}
+
+
+def tool_create_document(cur, agency_id, args):
+    title = (args.get('title') or '').strip()[:200]
+    body = (args.get('body') or '').strip()
+    if not title or not body:
+        raise ToolError('title and body are required')
+    cur.execute('SELECT COALESCE(MAX(position), -1) + 1 FROM public.agency_documents WHERE agency_id = %s', (agency_id,))
+    pos = cur.fetchone()[0]
+    cur.execute('INSERT INTO public.agency_documents (agency_id, title, body, position) VALUES (%s, %s, %s, %s) RETURNING id',
+                (agency_id, title, body, pos))
+    return {'ok': True, 'document_id': cur.fetchone()[0], 'title': title, 'position': pos}
+
+
+def tool_update_document(cur, agency_id, args):
+    doc_id = _need_int(args, 'document_id')
+    _require_document(cur, agency_id, doc_id)
+    sets, params = [], []
+    if args.get('title') is not None:
+        t = str(args['title']).strip()[:200]
+        if not t:
+            raise ToolError('title cannot be empty')
+        sets.append('title = %s'); params.append(t)
+    if args.get('body') is not None:
+        b = str(args['body']).strip()
+        if not b:
+            raise ToolError('body cannot be empty')
+        sets.append('body = %s'); params.append(b)
+    if not sets:
+        raise ToolError('provide title and/or body to update')
+    sets.append('updated_at = now()')
+    params += [doc_id, agency_id]
+    cur.execute(f'UPDATE public.agency_documents SET {", ".join(sets)} WHERE id = %s AND agency_id = %s', params)
+    return {'ok': True, 'document_id': doc_id}
+
+
+def tool_delete_document(cur, agency_id, args):
+    doc_id = _need_int(args, 'document_id')
+    _require_document(cur, agency_id, doc_id)
+    cur.execute('DELETE FROM public.agency_documents WHERE id = %s AND agency_id = %s', (doc_id, agency_id))
+    return {'ok': True, 'deleted_document_id': doc_id}
+
+
+def tool_list_document_acceptances(cur, agency_id, args):
+    """Acceptance audit. Default: who has accepted, with timestamps. Set
+    status='pending' (with a document_id) to list clients who have NOT accepted."""
+    status = (args.get('status') or 'accepted').lower()
+    doc_id = args.get('document_id')
+    if doc_id is not None:
+        _require_document(cur, agency_id, int(doc_id))
+        doc_id = int(doc_id)
+
+    if status == 'pending':
+        if not doc_id:
+            raise ToolError('document_id is required when status is "pending"')
+        cur.execute(
+            '''SELECT u.id, COALESCE(u.name, u.email), u.email
+               FROM public.users u
+               WHERE u.agency_id = %s AND u.role = 'client'
+                 AND NOT EXISTS (SELECT 1 FROM public.document_acceptances a
+                                 WHERE a.document_id = %s AND a.client_id = u.id)
+               ORDER BY COALESCE(u.name, u.email)''',
+            (agency_id, doc_id),
+        )
+        pend = [{'client_id': r[0], 'client_name': r[1], 'client_email': r[2]} for r in cur.fetchall()]
+        return {'status': 'pending', 'document_id': doc_id, 'count': len(pend), 'pending_clients': pend}
+
+    client_id = args.get('client_id')
+    if client_id is not None:
+        _require_client(cur, agency_id, client_id)
+    conds = ['d.agency_id = %s']
+    params = [agency_id]
+    if doc_id:
+        conds.append('d.id = %s'); params.append(doc_id)
+    if client_id is not None:
+        conds.append('a.client_id = %s'); params.append(int(client_id))
+    cur.execute(
+        f'''SELECT d.id, d.title, u.id, COALESCE(u.name, u.email), u.email, a.accepted_at
+            FROM public.document_acceptances a
+            JOIN public.agency_documents d ON d.id = a.document_id
+            JOIN public.users u ON u.id = a.client_id
+            WHERE {" AND ".join(conds)}
+            ORDER BY a.accepted_at DESC''',
+        params,
+    )
+    acc = [{'document_id': r[0], 'document_title': r[1], 'client_id': r[2],
+            'client_name': r[3], 'client_email': r[4], 'accepted_at': _iso(r[5])} for r in cur.fetchall()]
+    return {'status': 'accepted', 'count': len(acc), 'acceptances': acc}
+
+
 def _form_folder_ok(cur, agency_id, parent_id):
     if parent_id is None:
         return True
@@ -2093,6 +2226,80 @@ TOOLS = [
             'properties': {
                 'period': {'type': 'string', 'enum': ['this_month', 'last_month', 'last_90_days', 'ytd'],
                            'description': 'Period to check for invoices (default last_90_days).'},
+            },
+            'additionalProperties': False,
+        },
+    },
+    {
+        'name': 'list_documents',
+        'description': "List the agency's policy documents (T&Cs, privacy policy, …) that clients must accept, in order, each with how many clients have accepted vs are still pending.",
+        'handler': tool_list_documents,
+        'inputSchema': {'type': 'object', 'properties': {}, 'additionalProperties': False},
+    },
+    {
+        'name': 'get_document',
+        'description': "Get a policy document's full text plus accepted/pending counts.",
+        'handler': tool_get_document,
+        'inputSchema': {
+            'type': 'object',
+            'properties': {'document_id': {'type': 'integer', 'description': 'The document id (from list_documents).'}},
+            'required': ['document_id'],
+            'additionalProperties': False,
+        },
+    },
+    {
+        'name': 'create_document',
+        'description': "Add a policy document (title + body text) that every client must read and accept before using the portal. New clients accept at sign-up; existing clients on next login.",
+        'handler': tool_create_document,
+        'annotations': {'title': 'Create document', 'readOnlyHint': False, 'destructiveHint': False},
+        'inputSchema': {
+            'type': 'object',
+            'properties': {
+                'title': {'type': 'string', 'description': 'Document title, e.g. "Terms & Conditions".'},
+                'body': {'type': 'string', 'description': 'Full document text.'},
+            },
+            'required': ['title', 'body'],
+            'additionalProperties': False,
+        },
+    },
+    {
+        'name': 'update_document',
+        'description': "Update a policy document's title and/or body.",
+        'handler': tool_update_document,
+        'annotations': {'title': 'Update document', 'readOnlyHint': False, 'destructiveHint': False, 'idempotentHint': True},
+        'inputSchema': {
+            'type': 'object',
+            'properties': {
+                'document_id': {'type': 'integer', 'description': 'The document id.'},
+                'title': {'type': 'string', 'description': 'New title (optional).'},
+                'body': {'type': 'string', 'description': 'New body text (optional).'},
+            },
+            'required': ['document_id'],
+            'additionalProperties': False,
+        },
+    },
+    {
+        'name': 'delete_document',
+        'description': "Delete a policy document (and its recorded client acceptances).",
+        'handler': tool_delete_document,
+        'annotations': {'title': 'Delete document', 'readOnlyHint': False, 'destructiveHint': True},
+        'inputSchema': {
+            'type': 'object',
+            'properties': {'document_id': {'type': 'integer', 'description': 'The document id.'}},
+            'required': ['document_id'],
+            'additionalProperties': False,
+        },
+    },
+    {
+        'name': 'list_document_acceptances',
+        'description': "Acceptance audit: which clients have accepted which documents and when. Filter by document_id and/or client_id. Set status='pending' with a document_id to instead list clients who have NOT yet accepted that document.",
+        'handler': tool_list_document_acceptances,
+        'inputSchema': {
+            'type': 'object',
+            'properties': {
+                'document_id': {'type': 'integer', 'description': 'Optional: restrict to one document (required for status=pending).'},
+                'client_id': {'type': 'integer', 'description': 'Optional: restrict to one client.'},
+                'status': {'type': 'string', 'enum': ['accepted', 'pending'], 'description': "Default 'accepted'. 'pending' lists clients who haven't accepted."},
             },
             'additionalProperties': False,
         },
