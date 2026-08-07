@@ -252,7 +252,7 @@
             }
 
             function getFingerprint(messages) {
-                return messages.map((message) => message.id).join(',');
+                return messages.map((message) => message.id + ':' + (message.status || '')).join(',');
             }
 
             function isNearBottom() {
@@ -277,6 +277,35 @@
                 }).join('');
 
                 return `<div class="conversation_attachments">${items}</div>`;
+            }
+
+            // Read/delivered ticks (WhatsApp-style): one grey = sent, two grey =
+            // delivered, two blue = read. Shown only on your own messages.
+            function ticksHtml(status) {
+                const cls = status === 'read' ? 'msg_ticks--read'
+                    : status === 'delivered' ? 'msg_ticks--delivered'
+                    : 'msg_ticks--sent';
+                const c1 = '<path d="M1 6.6 4 9.6 9.4 3.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>';
+                const c2 = (status === 'delivered' || status === 'read')
+                    ? '<path d="M6 6.6 9 9.6 14.4 3.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>'
+                    : '';
+                return `<span class="msg_ticks ${cls}" title="${status || 'sent'}"><svg viewBox="0 0 16 12" width="16" height="12" aria-hidden="true">${c1}${c2}</svg></span>`;
+            }
+
+            // Update (or add) the tick indicator on each of your own messages.
+            function applyStatuses(messages) {
+                messages.forEach((message) => {
+                    if (message.sender !== 'you' || !message.status) return;
+                    const el = messagesEl.querySelector(`[data-message-id="${message.id}"]`);
+                    if (!el || el.classList.contains('conversation_item--form')) return;
+                    let meta = el.querySelector('.conversation_item_meta');
+                    if (!meta) {
+                        meta = document.createElement('div');
+                        meta.className = 'conversation_item_meta';
+                        el.appendChild(meta);
+                    }
+                    meta.innerHTML = ticksHtml(message.status);
+                });
             }
 
             function buildMessageElement(message, isNew) {
@@ -352,6 +381,7 @@
 
                 lastFingerprint = fingerprint;
                 decorateDeletable();
+                applyStatuses(messages);
 
                 if (stickToBottom) {
                     messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -550,7 +580,21 @@
                 decorateDeletable();
             }
 
-            function renderPresence({ online, typing }) {
+            function formatAgo(seconds) {
+                if (seconds < 60) return 'just now';
+                if (seconds < 3600) {
+                    const m = Math.floor(seconds / 60);
+                    return m + (m === 1 ? ' minute ago' : ' minutes ago');
+                }
+                if (seconds < 86400) {
+                    const h = Math.floor(seconds / 3600);
+                    return h + (h === 1 ? ' hour ago' : ' hours ago');
+                }
+                const d = Math.floor(seconds / 86400);
+                return d + (d === 1 ? ' day ago' : ' days ago');
+            }
+
+            function renderPresence({ online, typing, last_seen_seconds }) {
                 if (!presenceStatus) {
                     return;
                 }
@@ -565,6 +609,13 @@
                 if (online) {
                     presenceStatus.textContent = 'Online';
                     presenceStatus.className = 'chat_header__status chat_header__status--online';
+                    presenceStatus.hidden = false;
+                    return;
+                }
+
+                if (last_seen_seconds != null) {
+                    presenceStatus.textContent = 'Last seen ' + formatAgo(last_seen_seconds);
+                    presenceStatus.className = 'chat_header__status chat_header__status--seen';
                     presenceStatus.hidden = false;
                     return;
                 }

@@ -214,9 +214,22 @@ def fetch_conversation(cursor, user_id, chat_id):
         return None, None
 
     other_name = row[0]
+
+    # Opening/viewing the conversation marks the other person's messages to me as
+    # read (and delivered, if not already). This drives the blue ticks they see.
     cursor.execute(
         '''
-        SELECT id, sender_id, body, COALESCE(attachments, '[]'::jsonb), form_item_id, todo_order
+        UPDATE public.messages
+        SET read_at = now(), delivered_at = COALESCE(delivered_at, now())
+        WHERE sender_id = %s AND receiver_id = %s AND read_at IS NULL
+        ''',
+        (chat_id, user_id),
+    )
+
+    cursor.execute(
+        '''
+        SELECT id, sender_id, body, COALESCE(attachments, '[]'::jsonb), form_item_id, todo_order,
+               delivered_at, read_at
         FROM public.messages
         WHERE (sender_id = %s AND receiver_id = %s)
            OR (sender_id = %s AND receiver_id = %s)
@@ -226,13 +239,16 @@ def fetch_conversation(cursor, user_id, chat_id):
     )
     rows = cursor.fetchall()
     messages = []
-    for msg_id, sender_id, body, attachments, form_item_id, todo_order in rows:
+    for msg_id, sender_id, body, attachments, form_item_id, todo_order, delivered_at, read_at in rows:
         message = {
             'id': msg_id,
             'sender': 'you' if sender_id == user_id else other_name,
             'body': body or '',
             'attachments': enrich_attachments(attachments, chat_id),
         }
+        # Ticks appear only on your own outgoing messages.
+        if sender_id == user_id:
+            message['status'] = 'read' if read_at else ('delivered' if delivered_at else 'sent')
         if form_item_id:
             card = get_form_card(cursor, msg_id, form_item_id)
             if card:
@@ -266,7 +282,8 @@ def get_chat_presence(cursor, viewer_id, chat_id):
         '''
         SELECT
             last_seen_at > now() - interval '45 seconds' AS is_online,
-            typing_chat_id = %s AND typing_until > now() AS is_typing
+            typing_chat_id = %s AND typing_until > now() AS is_typing,
+            EXTRACT(EPOCH FROM (now() - last_seen_at))::bigint AS seconds_ago
         FROM public.user_presence
         WHERE user_id = %s
         ''',
@@ -274,8 +291,12 @@ def get_chat_presence(cursor, viewer_id, chat_id):
     )
     row = cursor.fetchone()
     if not row:
-        return {'online': False, 'typing': False}
-    return {'online': bool(row[0]), 'typing': bool(row[1])}
+        return {'online': False, 'typing': False, 'last_seen_seconds': None}
+    return {
+        'online': bool(row[0]),
+        'typing': bool(row[1]),
+        'last_seen_seconds': int(row[2]) if row[2] is not None else None,
+    }
 
 def attachment_error_response(message, status_code):
     return (
@@ -881,6 +902,14 @@ def ensure_messages_schema(conn):
     with conn.cursor() as cursor:
         cursor.execute(
             "ALTER TABLE public.messages ADD COLUMN IF NOT EXISTS attachments jsonb DEFAULT '[]'::jsonb"
+        )
+        # Read/delivered receipts (WhatsApp-style ticks).
+        cursor.execute("ALTER TABLE public.messages ADD COLUMN IF NOT EXISTS delivered_at timestamptz")
+        cursor.execute("ALTER TABLE public.messages ADD COLUMN IF NOT EXISTS read_at timestamptz")
+        # Speeds up unread counts and the mark-read/delivered updates.
+        cursor.execute(
+            'CREATE INDEX IF NOT EXISTS idx_messages_receiver_unread '
+            'ON public.messages (receiver_id, read_at)'
         )
         cursor.execute(
             '''
@@ -1614,7 +1643,20 @@ def dashboard():
                     'SELECT COALESCE(name, email), id, COALESCE(pro_user, false) FROM public.users WHERE id = ANY(%s)',
                     (chat_ids,),
                 )
-                chats = cursor.fetchall()
+                base_chats = cursor.fetchall()
+
+                # Unread badge counts: messages sent to me by each chat, not read.
+                cursor.execute(
+                    '''
+                    SELECT sender_id, COUNT(*)
+                    FROM public.messages
+                    WHERE receiver_id = %s AND sender_id = ANY(%s) AND read_at IS NULL
+                    GROUP BY sender_id
+                    ''',
+                    (user_id, chat_ids),
+                )
+                unread = {sid: cnt for sid, cnt in cursor.fetchall()}
+                chats = [(name, cid, pro, unread.get(cid, 0)) for (name, cid, pro) in base_chats]
 
     base = (APP_URL or request.url_root.rstrip('/'))
     return render_template(
@@ -3019,6 +3061,13 @@ def notifications_poll():
 
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
+            # Having the portal open anywhere means messages have reached the
+            # recipient's device — mark them delivered (grey double tick).
+            cursor.execute(
+                'UPDATE public.messages SET delivered_at = now() '
+                'WHERE receiver_id = %s AND delivered_at IS NULL',
+                (user_id,),
+            )
             cursor.execute(
                 '''
                 SELECT m.id, m.sender_id, COALESCE(u.name, u.email), m.body
@@ -3049,6 +3098,27 @@ def notifications_poll():
         'from': row[2],
         'snippet': snippet,
     }})
+
+@app.route('/notifications/unread')
+def notifications_unread():
+    user_id = session.get('user_id')
+    if not user_id:
+        return jsonify({'error': 'unauthorized'}), 401
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                '''
+                SELECT sender_id, COUNT(*)
+                FROM public.messages
+                WHERE receiver_id = %s AND read_at IS NULL
+                GROUP BY sender_id
+                ''',
+                (user_id,),
+            )
+            counts = {str(sid): cnt for sid, cnt in cursor.fetchall()}
+
+    return jsonify({'counts': counts})
 
 @app.route('/logout')
 def logout():

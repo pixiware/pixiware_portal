@@ -107,6 +107,7 @@
                                 <a href="{{ url_for('chat', chat_id=chat[1]) }}">
                                     <span class="chat_item__name">{{ chat[0] }}</span>
                                     <span class="plan_badge plan_badge--{{ 'pro' if chat[2] else 'free' }}">{{ 'Pro' if chat[2] else 'Free' }}</span>
+                                    <span class="chat_row__unread" data-unread-for="{{ chat[1] }}"{% if not chat[3] %} hidden{% endif %}>{{ chat[3] if chat[3] and chat[3] <= 99 else ('99+' if chat[3] else '') }}</span>
                                 </a>
                                 {% if is_agency %}
                                 <button type="button" class="chat_row__del" data-chat-id="{{ chat[1] }}" data-name="{{ chat[0] }}" aria-label="Delete chat" title="Delete chat">
@@ -174,6 +175,36 @@
             })();
         </script>
         <script src="{{ url_for('static', filename='notify.js') }}"></script>
+        <script>
+            // Keep the per-chat unread badges fresh while the dashboard is open.
+            (function () {
+                const badges = document.querySelectorAll('.chat_row__unread');
+                if (!badges.length) return;
+
+                function setBadge(el, count) {
+                    if (count > 0) {
+                        el.textContent = count > 99 ? '99+' : String(count);
+                        el.hidden = false;
+                    } else {
+                        el.textContent = '';
+                        el.hidden = true;
+                    }
+                }
+
+                async function refresh() {
+                    try {
+                        const res = await fetch('/notifications/unread');
+                        if (!res.ok) return;
+                        const { counts } = await res.json();
+                        badges.forEach((el) => setBadge(el, (counts && counts[el.dataset.unreadFor]) || 0));
+                    } catch (e) { /* ignore transient errors */ }
+                }
+
+                refresh();
+                setInterval(() => { if (!document.hidden) refresh(); }, 10000);
+                document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
+            })();
+        </script>
         <script>
             (function () {
                 const createBtn = document.getElementById('invite-create');

@@ -787,3 +787,21 @@ body:has(.chat_header) .chat_workspace {
         width: 100%;
     }
 }
+
+/* ---- Read/delivered ticks on your own messages ---- */
+.conversation_item_meta {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 0.25rem;
+}
+.msg_ticks {
+    display: inline-flex;
+    align-items: center;
+    line-height: 0;
+    color: var(--color-text-soft); /* sent / delivered = grey */
+}
+.msg_ticks svg { display: block; }
+.msg_ticks--read { color: var(--color-cyan); } /* read = blue */
+
+/* Last-seen line in the chat header */
+.chat_header__status--seen { color: var(--color-text-soft); }
