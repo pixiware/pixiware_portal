@@ -867,6 +867,90 @@ def tool_get_messages(cur, agency_id, args):
     return {'client_id': client_id, 'count': len(messages), 'messages': messages}
 
 
+def _collect_notifications(cur, agency_id, client_id=None, limit=100):
+    """Unread messages sent to the agency (its 'notifications'), each pointing at
+    the client it came from so the model knows where to look."""
+    ctx = _agency_context(cur, agency_id)
+    ids = ctx['client_ids'] if ctx else []
+    if client_id is not None:
+        if int(client_id) not in ids:
+            raise ToolError(f'Client {client_id} is not one of your clients')
+        ids = [int(client_id)]
+    if not ids:
+        return {'unread_total': 0, 'client_count': 0, 'by_client': [], 'notifications': [], 'returned': 0}
+
+    cur.execute('SELECT id, COALESCE(name, email) FROM public.users WHERE id = ANY(%s)', (ids,))
+    names = {r[0]: r[1] for r in cur.fetchall()}
+
+    # The individual unread messages (most recent first, capped by limit).
+    cur.execute(
+        '''SELECT id, sender_id, body, COALESCE(attachments, '[]'::jsonb), form_item_id, created_at
+           FROM public.messages
+           WHERE receiver_id = %s AND sender_id = ANY(%s) AND read_at IS NULL
+           ORDER BY created_at DESC
+           LIMIT %s''',
+        (agency_id, ids, limit),
+    )
+    notifications = []
+    for msg_id, sender_id, body, attachments, form_item_id, created in cur.fetchall():
+        atts = _serialize_attachments(attachments)
+        text = (body or '').strip()
+        if text:
+            snippet = text if len(text) <= 120 else text[:117] + '...'
+        elif form_item_id:
+            snippet = '[submitted a form]'
+        elif atts:
+            snippet = '[sent an attachment]'
+        else:
+            snippet = ''
+        notifications.append({
+            'message_id': msg_id,
+            'client_id': sender_id,
+            'client_name': names.get(sender_id),
+            'snippet': snippet,
+            'created_at': _iso(created),
+            'has_attachments': bool(atts),
+            'is_form_submission': bool(form_item_id),
+        })
+
+    # Per-client totals across ALL unread (not limited) so counts are accurate.
+    cur.execute(
+        '''SELECT sender_id, COUNT(*), MAX(created_at)
+           FROM public.messages
+           WHERE receiver_id = %s AND sender_id = ANY(%s) AND read_at IS NULL
+           GROUP BY sender_id''',
+        (agency_id, ids),
+    )
+    by_client, total = [], 0
+    for sid, cnt, last in cur.fetchall():
+        total += cnt
+        by_client.append({
+            'client_id': sid,
+            'client_name': names.get(sid),
+            'unread_count': cnt,
+            'last_message_at': _iso(last),
+        })
+    by_client.sort(key=lambda c: c['last_message_at'] or '', reverse=True)
+    return {
+        'unread_total': total,
+        'client_count': len(by_client),
+        'by_client': by_client,
+        'notifications': notifications,
+        'returned': len(notifications),
+    }
+
+
+def tool_list_notifications(cur, agency_id, args):
+    limit = max(1, min(_opt_int(args, 'limit', 100), 500))
+    return _collect_notifications(cur, agency_id, None, limit)
+
+
+def tool_get_client_notifications(cur, agency_id, args):
+    client_id = _need_int(args, 'client_id')
+    limit = max(1, min(_opt_int(args, 'limit', 100), 500))
+    return _collect_notifications(cur, agency_id, client_id, limit)
+
+
 def tool_get_vault(cur, agency_id, args):
     client_id = _need_int(args, 'client_id')
     _require_client(cur, agency_id, client_id)
@@ -1875,6 +1959,43 @@ TOOLS = [
         },
     },
     {
+        'name': 'list_notifications',
+        'description': (
+            "The agency's inbox of unread client messages (its notifications). Returns "
+            "'unread_total', a 'by_client' summary (each with client_id, client_name and "
+            "unread_count — this tells you WHERE each notification is), and a 'notifications' "
+            "list where every item carries its client_id, client_name, message_id, snippet and "
+            "created_at. To read a notification in full context, call get_messages with its "
+            "client_id. Reading a chat in the portal marks it read and clears its notifications."
+        ),
+        'handler': tool_list_notifications,
+        'inputSchema': {
+            'type': 'object',
+            'properties': {
+                'limit': {'type': 'integer', 'description': 'Max individual notifications returned (most recent), default 100, max 500. Per-client counts are always exact.'},
+            },
+            'additionalProperties': False,
+        },
+    },
+    {
+        'name': 'get_client_notifications',
+        'description': (
+            "The unread messages (notifications) from ONE specific client. Same shape as "
+            "list_notifications but scoped to the given client_id. Use list_clients or "
+            "list_notifications to discover client_ids."
+        ),
+        'handler': tool_get_client_notifications,
+        'inputSchema': {
+            'type': 'object',
+            'properties': {
+                'client_id': {'type': 'integer', 'description': 'The client id (from list_clients / list_notifications).'},
+                'limit': {'type': 'integer', 'description': 'Max notifications returned (most recent), default 100, max 500.'},
+            },
+            'required': ['client_id'],
+            'additionalProperties': False,
+        },
+    },
+    {
         'name': 'get_vault',
         'description': "Read a client's PixiVault: all documents and folders, as a flat list and a nested tree. Each file includes its name, mime type, size, and a time-limited download_url (valid ~1 hour) so you can fetch the actual file contents.",
         'handler': tool_get_vault,
@@ -2455,6 +2576,9 @@ def _handle_rpc(message, agency_id):
             'instructions': (
                 'Full access to a Pixiware agency, scoped automatically to your own clients. '
                 'Start with whoami and list_clients to discover client_ids. '
+                'For new/unread activity, call list_notifications (agency-wide inbox, grouped '
+                'by client so you know where each notification is) or get_client_notifications '
+                '(one client); each notification carries a client_id to open with get_messages. '
                 'Read: get_client, get_messages, get_vault (files include a download_url), '
                 'list_delivery_dates, get_form_submissions, search_messages, list_forms, '
                 'get_form, list_form_submissions, get_site_embed (returns an iframe for chat). '
